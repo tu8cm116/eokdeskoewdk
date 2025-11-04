@@ -2,15 +2,18 @@ import os
 import asyncpg
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
-# Читаем переменные окружения
+# ---------- Конфигурация ----------
 TOKEN = os.getenv("BOT_TOKEN")
 PGHOST = os.getenv("PGHOST")
 PGUSER = os.getenv("PGUSER")
 PGPASSWORD = os.getenv("PGPASSWORD")
 PGDATABASE = os.getenv("PGDATABASE")
 PGPORT = int(os.getenv("PGPORT", "5432"))
+
+# ID модератора задаётся через переменные окружения
+MODERATOR_ID = int(os.getenv("MODERATOR_ID", "0"))
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
@@ -33,6 +36,13 @@ chat_menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton("⏹ Стоп"), KeyboardButton("➡️ Следующий")],
         [KeyboardButton("⚠️ Пожаловаться")]
+    ],
+    resize_keyboard=True
+)
+
+waiting_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton("❌ Отмена")]
     ],
     resize_keyboard=True
 )
@@ -119,8 +129,7 @@ async def break_pair(user_id: int):
 async def start(msg: types.Message):
     await ensure_user(msg.from_user.id)
     await msg.answer(
-        "Привет! Я анонимный чат-бот.\n"
-        "Выбери действие:",
+        "Привет! Я анонимный чат-бот.\nВыбери действие:",
         reply_markup=main_menu
     )
 
@@ -146,7 +155,14 @@ async def search(msg: types.Message):
     else:
         await add_to_queue(uid)
         await set_status(uid, 'waiting')
-        await msg.answer("⏳ Ожидание собеседника...", reply_markup=main_menu)
+        await msg.answer("⏳ Ожидание собеседника...", reply_markup=waiting_menu)
+
+@dp.message_handler(lambda m: m.text in ["❌ Отмена"])
+async def cancel_search(msg: types.Message):
+    uid = msg.from_user.id
+    await remove_from_queue(uid)
+    await set_status(uid, 'idle')
+    await msg.answer("Поиск отменён.", reply_markup=main_menu)
 
 @dp.message_handler(lambda m: m.text in ["⏹ Стоп", "/stop"])
 async def stop(msg: types.Message):
@@ -164,14 +180,39 @@ async def next_chat(msg: types.Message):
     await stop(msg)
     await search(msg)
 
+# ---------- Жалобы ----------
+user_reporting = {}  # user_id -> partner_id
+
 @dp.message_handler(lambda m: m.text in ["⚠️ Пожаловаться"])
-async def report(msg: types.Message):
-    partner = await get_partner(msg.from_user.id)
+async def report_start(msg: types.Message):
+    uid = msg.from_user.id
+    partner = await get_partner(uid)
     if partner:
-        # Здесь можно добавить отправку админу
-        await msg.answer("⚠️ Жалоба отправлена. Собеседник будет проверен.", reply_markup=chat_menu)
+        user_reporting[uid] = partner
+        await msg.answer("Опиши причину жалобы текстом:", reply_markup=ReplyKeyboardRemove())
     else:
         await msg.answer("Ты не в чате.", reply_markup=main_menu)
+
+@dp.message_handler(lambda m: m.from_user.id in user_reporting)
+async def report_reason(msg: types.Message):
+    uid = msg.from_user.id
+    partner = user_reporting.pop(uid)
+    reason = msg.text
+
+    # Отправляем жалобу модератору
+    if MODERATOR_ID:
+        await bot.send_message(
+            MODERATOR_ID,
+            f"⚠️ Жалоба!\n"
+            f"От: {uid}\n"
+            f"На: {partner}\n"
+            f"Причина: {reason}"
+        )
+
+    # Завершаем чат у обоих
+    await break_pair(uid)
+    await bot.send_message(uid, "Жалоба отправлена. Чат завершён.", reply_markup=main_menu)
+    await bot.send_message(partner, "❌ Собеседник покинул чат.", reply_markup=main_menu)
 
 # ---------- Пересылка сообщений ----------
 @dp.message_handler(content_types=types.ContentTypes.ANY)
