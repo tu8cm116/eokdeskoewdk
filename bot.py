@@ -66,8 +66,9 @@ async def init_db():
                     reported_at TIMESTAMP DEFAULT NOW(), resolved BOOLEAN DEFAULT FALSE
                 );
                 CREATE TABLE IF NOT EXISTS bans (user_id BIGINT PRIMARY KEY, reason TEXT);
+                CREATE INDEX IF NOT EXISTS idx_queue_joined_at ON queue (joined_at);
             """)
-        log.info("Таблицы созданы")
+        log.info("Таблицы и индекс созданы")
         return True
     except Exception as e:
         log.error(f"БД ошибка: {e}")
@@ -92,27 +93,32 @@ async def add_to_queue(uid):
     if db_pool:
         async with db_pool.acquire() as conn:
             await conn.execute("INSERT INTO queue(user_id) VALUES($1) ON CONFLICT DO NOTHING", uid)
+            log.info(f"Пользователь {uid} добавлен в очередь")
 
 async def remove_from_queue(uid):
     if db_pool:
         async with db_pool.acquire() as conn:
             await conn.execute("DELETE FROM queue WHERE user_id = $1", uid)
+            log.info(f"Пользователь {uid} удалён из очереди")
 
 async def find_partner(exclude_id):
     if not db_pool: return None
     async with db_pool.acquire() as conn:
-        return await conn.fetchval(
+        partner = await conn.fetchval(
             "SELECT user_id FROM queue WHERE user_id != $1 ORDER BY joined_at ASC LIMIT 1",
             exclude_id
         )
+        log.info(f"Поиск партнёра для {exclude_id}: найден {partner}")
+        return partner
 
 async def create_pair(a, b):
     if not db_pool: return
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("DELETE FROM queue WHERE user_id IN ($1, $2)", a, b)
-            await conn.execute("INSERT INTO pairs(user_id, partner_id) VALUES($1, $2), ($2, $1)", a, b)
+            await conn.execute("INSERT INTO pairs(user_id, partner_id) VALUES($1, $2), ($2, $1) ON CONFLICT DO NOTHING", a, b)
             await conn.execute("UPDATE users SET status = 'chatting' WHERE user_id IN ($1, $2)", a, b)
+            log.info(f"Пара создана: {a} <-> {b}")
 
 async def get_partner(uid):
     if not db_pool: return None
@@ -127,6 +133,7 @@ async def break_pair(uid):
             async with conn.transaction():
                 await conn.execute("DELETE FROM pairs WHERE user_id IN ($1, $2)", uid, partner)
                 await conn.execute("UPDATE users SET status = 'idle' WHERE user_id IN ($1, $2)", uid, partner)
+            log.info(f"Пара разорвана: {uid} <-> {partner}")
         return partner
 
 async def is_banned(uid):
@@ -142,7 +149,7 @@ async def save_report(fr, to, reason):
 async def get_unresolved_reports():
     if not db_pool: return []
     async with db_pool.acquire() as conn:
-        return await conn.fetch("SELECT * FROM reports WHERE resolved = FALSE")
+        return await conn.fetch("SELECT * FROM reports WHERE resolved = FALSE ORDER BY reported_at ASC")
 
 async def mark_report_resolved(rid):
     if db_pool:
@@ -154,12 +161,14 @@ async def ban_user(uid, reason="Нарушение"):
         async with db_pool.acquire() as conn:
             await conn.execute("INSERT INTO bans(user_id, reason) VALUES($1, $2) ON CONFLICT DO UPDATE SET reason = $2", uid, reason)
             await conn.execute("UPDATE users SET banned = TRUE WHERE user_id = $1", uid)
+            log.info(f"Пользователь {uid} забанен: {reason}")
 
 async def unban_user(uid):
     if db_pool:
         async with db_pool.acquire() as conn:
             await conn.execute("DELETE FROM bans WHERE user_id = $1", uid)
             await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
+            log.info(f"Пользователь {uid} разбанен")
 
 async def get_banned_users():
     if not db_pool: return []
@@ -181,9 +190,11 @@ async def clear_active_chats():
             await conn.execute("DELETE FROM pairs")
             await conn.execute("DELETE FROM queue")
             await conn.execute("UPDATE users SET status = 'idle'")
+            log.info("Старые чаты очищены")
 
 # ---------- Хэндлеры ----------
 user_reporting = {}
+waiting_tasks = {}  # uid -> task для фонового поиска
 
 @dp.message_handler(commands=['start'])
 async def start(msg: types.Message):
@@ -192,6 +203,9 @@ async def start(msg: types.Message):
     await break_pair(uid)
     await remove_from_queue(uid)
     await set_status(uid, 'idle')
+    if uid in waiting_tasks:
+        waiting_tasks[uid].cancel()
+        del waiting_tasks[uid]
     await msg.answer("Привет! Анонимный чат.\nНажми «Найти собеседника».", reply_markup=main_menu)
 
 @dp.message_handler(lambda m: m.text == "Помощь")
@@ -211,27 +225,50 @@ async def search(msg: types.Message):
     await set_status(uid, 'waiting')
     await msg.answer("Ищем собеседника... (до 30 сек)", reply_markup=waiting_menu)
 
-    for _ in range(30):  # 30 секунд
-        await asyncio.sleep(1)
-        partner = await find_partner(uid)
-        if partner:
-            await create_pair(uid, partner)
-            await bot.send_message(uid, "Собеседник найден! Пиши.", reply_markup=chat_menu)
-            await bot.send_message(partner, "Собеседник найден! Пиши.", reply_markup=chat_menu)
-            return
-    await remove_from_queue(uid)
-    await set_status(uid, 'idle')
-    await msg.answer("Не нашли. Попробуй позже.", reply_markup=main_menu)
+    # Фоновый поиск (не блокирует)
+    task = asyncio.create_task(wait_for_partner(uid, msg.chat.id))
+    waiting_tasks[uid] = task
+
+async def wait_for_partner(uid, chat_id):
+    """Фоновая задача поиска партнёра"""
+    try:
+        for i in range(30):
+            await asyncio.sleep(1)
+            partner = await find_partner(uid)
+            if partner:
+                await create_pair(uid, partner)
+                await bot.send_message(uid, "Собеседник найден! Пиши.", reply_markup=chat_menu)
+                await bot.send_message(partner, "Собеседник найден! Пиши.", reply_markup=chat_menu)
+                if uid in waiting_tasks:
+                    del waiting_tasks[uid]
+                return
+        # Таймаут
+        await remove_from_queue(uid)
+        await set_status(uid, 'idle')
+        await bot.send_message(chat_id, "Не нашли. Попробуй позже.", reply_markup=main_menu)
+        if uid in waiting_tasks:
+            del waiting_tasks[uid]
+    except asyncio.CancelledError:
+        log.info(f"Поиск для {uid} отменён")
+        await remove_from_queue(uid)
+        await set_status(uid, 'idle')
+        if uid in waiting_tasks:
+            del waiting_tasks[uid]
 
 @dp.message_handler(lambda m: m.text == "Отмена")
 async def cancel(msg: types.Message):
-    await remove_from_queue(msg.from_user.id)
-    await set_status(msg.from_user.id, 'idle')
+    uid = msg.from_user.id
+    if uid in waiting_tasks:
+        waiting_tasks[uid].cancel()
+    await remove_from_queue(uid)
+    await set_status(uid, 'idle')
     await msg.answer("Поиск отменён.", reply_markup=main_menu)
 
 @dp.message_handler(lambda m: m.text in ["Стоп", "Следующий"])
 async def stop(msg: types.Message):
     uid = msg.from_user.id
+    if uid in waiting_tasks:
+        waiting_tasks[uid].cancel()
     partner = await break_pair(uid)
     if partner:
         await bot.send_message(partner, "Собеседник вышел.", reply_markup=main_menu)
@@ -270,13 +307,14 @@ async def relay(msg: types.Message):
     if not partner: return
     try:
         if msg.text: await bot.send_message(partner, msg.text)
-        elif msg.photo: await bot.send_photo(partner, msg.photo[-1].file_id, caption=msg.caption)
+        elif msg.photo: await bot.send_photo(partner, msg.photo[-1].file_id, caption=msg.caption or "")
         elif msg.sticker: await bot.send_sticker(partner, msg.sticker.file_id)
         elif msg.voice: await bot.send_voice(partner, msg.voice.file_id)
         elif msg.document: await bot.send_document(partner, msg.document.file_id)
         elif msg.video: await bot.send_video(partner, msg.video.file_id)
         else: await bot.send_message(partner, "Сообщение получено.")
-    except:
+    except Exception as e:
+        log.error(f"Ошибка пересылки: {e}")
         await break_pair(msg.from_user.id)
         await msg.answer("Чат прерван.", reply_markup=main_menu)
 
@@ -294,12 +332,10 @@ async def show_reports(msg: types.Message):
     if not reports:
         return await msg.answer("Нет жалоб.", reply_markup=mod_menu)
     for r in reports:
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton("Удалить чат", callback_data=f"del_{r['from_user']}_{r['to_user']}"),
-            InlineKeyboardButton("Забанить", callback_data=f"ban_{r['to_user']}")
-        )
-        kb.add(InlineKeyboardButton("Игнор", callback_data=f"ign_{r['id']}"))
+        kb = InlineKeyboardMarkup(row_width=1)
+        kb.insert(InlineKeyboardButton("Удалить чат", callback_data=f"mod_delchat_{r['from_user']}_{r['to_user']}"))
+        kb.insert(InlineKeyboardButton("Забанить", callback_data=f"mod_ban_{r['to_user']}"))
+        kb.insert(InlineKeyboardButton("Игнор", callback_data=f"mod_ignore_{r['id']}"))
         await msg.answer(
             f"<b>Жалоба #{r['id']}</b>\n"
             f"От: <a href='tg://user?id={r['from_user']}'>{r['from_user']}</a>\n"
@@ -307,6 +343,7 @@ async def show_reports(msg: types.Message):
             f"Причина: {r['reason']}",
             reply_markup=kb
         )
+    await msg.answer("Действия:", reply_markup=mod_menu)
 
 @dp.message_handler(lambda m: m.text == "Статистика")
 async def stats(msg: types.Message):
@@ -320,46 +357,52 @@ async def bans(msg: types.Message):
     users = await get_banned_users()
     if not users:
         return await msg.answer("Нет банов.", reply_markup=mod_menu)
-    kb = InlineKeyboardMarkup()
+    kb = InlineKeyboardMarkup(row_width=1)
     for u in users:
-        kb.add(InlineKeyboardButton(f"Разбанить {u['user_id']}", callback_data=f"unban_{u['user_id']}"))
-    await msg.answer("Забаненные:", reply_markup=kb)
+        kb.insert(InlineKeyboardButton(f"Разбанить {u['user_id']}", callback_data=f"mod_unban_{u['user_id']}"))
+    text = "<b>Забаненные:</b>\n"
+    for u in users:
+        text += f"• {u['user_id']} — {u['reason']}\n"
+    await msg.answer(text, reply_markup=kb)
 
 @dp.message_handler(lambda m: m.text == "Выход")
 async def mod_exit(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID: return
     await msg.answer("Выход из мод-панели.", reply_markup=ReplyKeyboardRemove())
 
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith(("del_", "ban_", "ign_", "unban_")))
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith("mod_"))
 async def mod_cb(call: types.CallbackQuery):
     if call.from_user.id != MODERATOR_ID:
         return await call.answer("Нет доступа", show_alert=True)
 
     d = call.data
     try:
-        if d.startswith("del_"):
-            _, a, b = d.split("_")
-            a, b = int(a), int(b)
-            await break_pair(a); await break_pair(b)
-            await bot.send_message(a, "Чат удалён модератором.")
-            await bot.send_message(b, "Чат удалён модератором.")
+        if d.startswith("mod_delchat_"):
+            parts = d.split("_")
+            from_user = int(parts[2])
+            to_user = int(parts[3])
+            await break_pair(from_user)
+            await break_pair(to_user)
+            await bot.send_message(from_user, "Чат удалён модератором.")
+            await bot.send_message(to_user, "Чат удалён модератором.")
             await call.answer("Чат удалён")
-        elif d.startswith("ban_"):
-            _, uid = d.split("_")
-            await ban_user(int(uid))
-            await break_pair(int(uid))
-            await bot.send_message(int(uid), "Вы забанены.")
+        elif d.startswith("mod_ban_"):
+            uid = int(d.split("_")[2])
+            await ban_user(uid)
+            await break_pair(uid)
+            await bot.send_message(uid, "Вы забанены.")
             await call.answer("Забанен")
-        elif d.startswith("ign_"):
-            _, rid = d.split("_")
-            await mark_report_resolved(int(rid))
+        elif d.startswith("mod_ignore_"):
+            rid = int(d.split("_")[2])
+            await mark_report_resolved(rid)
             await call.answer("Игнор")
-        elif d.startswith("unban_"):
-            _, uid = d.split("_")
-            await unban_user(int(uid))
-            await bot.send_message(int(uid), "Вы разбанены.")
+        elif d.startswith("mod_unban_"):
+            uid = int(d.split("_")[2])
+            await unban_user(uid)
+            await bot.send_message(uid, "Вы разбанены.")
             await call.answer("Разбанен")
     except Exception as e:
+        log.error(f"Мод ошибка: {e}")
         await call.answer("Ошибка")
 
 # ---------- Запуск ----------
