@@ -3,7 +3,7 @@ import asyncpg
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 
-# Переменные окружения (Railway задаст их на стороне сервера)
+# Читаем переменные окружения (Railway задаёт их в Variables)
 TOKEN = os.getenv("BOT_TOKEN")
 PGHOST = os.getenv("PGHOST")
 PGUSER = os.getenv("PGUSER")
@@ -19,13 +19,34 @@ dp = Dispatcher(bot)
 
 db_pool = None
 
+# Инициализация базы + автоматическое создание таблиц
 async def init_db():
     global db_pool
     db_pool = await asyncpg.create_pool(
         host=PGHOST, user=PGUSER, password=PGPASSWORD,
         database=PGDATABASE, port=PGPORT, min_size=1, max_size=5
     )
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                gender VARCHAR(10),
+                age INT,
+                interests TEXT,
+                status VARCHAR(20) DEFAULT 'idle'
+            );
+            CREATE TABLE IF NOT EXISTS queue (
+                user_id BIGINT PRIMARY KEY,
+                joined_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS pairs (
+                user_id BIGINT PRIMARY KEY,
+                partner_id BIGINT NOT NULL,
+                started_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
 
+# Утилиты работы с БД
 async def ensure_user(user_id: int):
     async with db_pool.acquire() as conn:
         await conn.execute("""
@@ -76,6 +97,7 @@ async def break_pair(user_id: int):
                 await conn.execute("UPDATE users SET status='idle' WHERE user_id IN ($1, $2)", user_id, partner)
         return partner
 
+# Хэндлеры команд
 @dp.message_handler(commands=['start'])
 async def start(msg: types.Message):
     await ensure_user(msg.from_user.id)
@@ -122,6 +144,7 @@ async def stop(msg: types.Message):
     else:
         await msg.answer("Ты не в чате. Если хочешь найти собеседника, напиши /search.")
 
+# Пересылка сообщений
 @dp.message_handler(content_types=types.ContentTypes.ANY)
 async def relay(msg: types.Message):
     uid = msg.from_user.id
@@ -145,6 +168,7 @@ async def relay(msg: types.Message):
     else:
         await bot.send_message(partner, "Получено сообщение.")
 
+# Запуск
 async def on_startup(_):
     await init_db()
     print("Bot started and DB pool initialized")
