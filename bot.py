@@ -131,7 +131,7 @@ async def break_pair(user_id: int):
                 await conn.execute("UPDATE users SET status='idle' WHERE user_id IN ($1, $2)", user_id, partner)
         return partner
 
-# ---------- Хэндлеры ----------
+# ---------- Хэндлеры команд и кнопок ----------
 @dp.message_handler(commands=['start'])
 async def start(msg: types.Message):
     await ensure_user(msg.from_user.id)
@@ -225,3 +225,5 @@ async def mod_panel(msg: types.Message):
         await msg.answer("⛔ У тебя нет доступа к мод‑панели.")
         return
     await msg.answer("Добро пожаловать в мод‑панель:", reply_markup=mod_menu)
+
+# ---------- Пересылка сообщений (вс
