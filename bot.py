@@ -2,8 +2,9 @@ import os
 import asyncpg
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-# Читаем переменные окружения (Railway задаёт их в Variables)
+# Читаем переменные окружения
 TOKEN = os.getenv("BOT_TOKEN")
 PGHOST = os.getenv("PGHOST")
 PGUSER = os.getenv("PGUSER")
@@ -19,7 +20,24 @@ dp = Dispatcher(bot)
 
 db_pool = None
 
-# Инициализация базы + автоматическое создание таблиц
+# ---------- Клавиатуры ----------
+main_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton("🔍 Найти собеседника")],
+        [KeyboardButton("ℹ️ Помощь")]
+    ],
+    resize_keyboard=True
+)
+
+chat_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton("⏹ Стоп"), KeyboardButton("➡️ Следующий")],
+        [KeyboardButton("⚠️ Пожаловаться")]
+    ],
+    resize_keyboard=True
+)
+
+# ---------- Работа с БД ----------
 async def init_db():
     global db_pool
     db_pool = await asyncpg.create_pool(
@@ -46,7 +64,6 @@ async def init_db():
             );
         """)
 
-# Утилиты работы с БД
 async def ensure_user(user_id: int):
     async with db_pool.acquire() as conn:
         await conn.execute("""
@@ -97,60 +114,71 @@ async def break_pair(user_id: int):
                 await conn.execute("UPDATE users SET status='idle' WHERE user_id IN ($1, $2)", user_id, partner)
         return partner
 
-# Хэндлеры команд
+# ---------- Хэндлеры ----------
 @dp.message_handler(commands=['start'])
 async def start(msg: types.Message):
     await ensure_user(msg.from_user.id)
     await msg.answer(
         "Привет! Я анонимный чат-бот.\n"
-        "Команды:\n"
-        "/search — найти собеседника\n"
-        "/stop — завершить чат\n"
-        "/help — помощь"
+        "Выбери действие:",
+        reply_markup=main_menu
     )
 
-@dp.message_handler(commands=['help'])
+@dp.message_handler(lambda m: m.text in ["ℹ️ Помощь", "/help"])
 async def help_cmd(msg: types.Message):
-    await msg.answer("Напиши /search чтобы найти собеседника. Когда захочешь выйти — /stop.")
+    await msg.answer("Напиши «🔍 Найти собеседника», чтобы начать поиск. Когда захочешь выйти — «⏹ Стоп».", reply_markup=main_menu)
 
-@dp.message_handler(commands=['search'])
+@dp.message_handler(lambda m: m.text in ["🔍 Найти собеседника", "/search"])
 async def search(msg: types.Message):
     uid = msg.from_user.id
     await ensure_user(uid)
 
     partner_now = await get_partner(uid)
     if partner_now:
-        await msg.answer("Ты уже общаешься. Напиши /stop чтобы завершить текущий чат.")
+        await msg.answer("Ты уже общаешься. Нажми «⏹ Стоп», чтобы завершить текущий чат.", reply_markup=chat_menu)
         return
 
     partner = await find_partner(uid)
     if partner:
         await create_pair(uid, partner)
-        await bot.send_message(uid, "🔗 Собеседник найден! Можешь писать.")
-        await bot.send_message(partner, "🔗 Собеседник найден! Можешь писать.")
+        await bot.send_message(uid, "🔗 Собеседник найден! Можешь писать.", reply_markup=chat_menu)
+        await bot.send_message(partner, "🔗 Собеседник найден! Можешь писать.", reply_markup=chat_menu)
     else:
         await add_to_queue(uid)
         await set_status(uid, 'waiting')
-        await msg.answer("⏳ Ожидание собеседника...")
+        await msg.answer("⏳ Ожидание собеседника...", reply_markup=main_menu)
 
-@dp.message_handler(commands=['stop'])
+@dp.message_handler(lambda m: m.text in ["⏹ Стоп", "/stop"])
 async def stop(msg: types.Message):
     uid = msg.from_user.id
     await remove_from_queue(uid)
     partner = await break_pair(uid)
     if partner:
-        await bot.send_message(partner, "❌ Собеседник покинул чат.")
-        await msg.answer("❌ Ты покинул чат.")
+        await bot.send_message(partner, "❌ Собеседник покинул чат.", reply_markup=main_menu)
+        await msg.answer("❌ Ты покинул чат.", reply_markup=main_menu)
     else:
-        await msg.answer("Ты не в чате. Если хочешь найти собеседника, напиши /search.")
+        await msg.answer("Ты не в чате.", reply_markup=main_menu)
 
-# Пересылка сообщений
+@dp.message_handler(lambda m: m.text in ["➡️ Следующий"])
+async def next_chat(msg: types.Message):
+    await stop(msg)
+    await search(msg)
+
+@dp.message_handler(lambda m: m.text in ["⚠️ Пожаловаться"])
+async def report(msg: types.Message):
+    partner = await get_partner(msg.from_user.id)
+    if partner:
+        # Здесь можно добавить отправку админу
+        await msg.answer("⚠️ Жалоба отправлена. Собеседник будет проверен.", reply_markup=chat_menu)
+    else:
+        await msg.answer("Ты не в чате.", reply_markup=main_menu)
+
+# ---------- Пересылка сообщений ----------
 @dp.message_handler(content_types=types.ContentTypes.ANY)
 async def relay(msg: types.Message):
     uid = msg.from_user.id
     partner = await get_partner(uid)
     if not partner:
-        await msg.answer("Ты не в чате. Напиши /search чтобы найти собеседника.")
         return
 
     if msg.text:
@@ -168,7 +196,7 @@ async def relay(msg: types.Message):
     else:
         await bot.send_message(partner, "Получено сообщение.")
 
-# Запуск
+# ---------- Запуск ----------
 async def on_startup(_):
     await init_db()
     print("Bot started and DB pool initialized")
