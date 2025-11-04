@@ -2,7 +2,10 @@ import os
 import asyncpg
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import (
+    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 
 # ---------- Конфигурация ----------
 TOKEN = os.getenv("BOT_TOKEN")
@@ -46,7 +49,8 @@ waiting_menu = ReplyKeyboardMarkup(
 
 mod_menu = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton("Жалобы"), KeyboardButton("Статистика")]
+        [KeyboardButton("Жалобы"), KeyboardButton("Статистика")],
+        [KeyboardButton("Баны"), KeyboardButton("Выход")]
     ],
     resize_keyboard=True
 )
@@ -65,7 +69,8 @@ async def init_db():
                 gender VARCHAR(10),
                 age INT,
                 interests TEXT,
-                status VARCHAR(20) DEFAULT 'idle'
+                status VARCHAR(20) DEFAULT 'idle',
+                banned BOOLEAN DEFAULT FALSE
             );
             CREATE TABLE IF NOT EXISTS queue (
                 user_id BIGINT PRIMARY KEY,
@@ -76,13 +81,26 @@ async def init_db():
                 partner_id BIGINT NOT NULL,
                 started_at TIMESTAMP DEFAULT NOW()
             );
+            CREATE TABLE IF NOT EXISTS reports (
+                id SERIAL PRIMARY KEY,
+                from_user BIGINT,
+                to_user BIGINT,
+                reason TEXT,
+                reported_at TIMESTAMP DEFAULT NOW(),
+                resolved BOOLEAN DEFAULT FALSE
+            );
+            CREATE TABLE IF NOT EXISTS bans (
+                user_id BIGINT PRIMARY KEY,
+                banned_at TIMESTAMP DEFAULT NOW(),
+                reason TEXT
+            );
         """)
 
 async def ensure_user(user_id: int):
     async with db_pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO users(user_id, status)
-            VALUES($1, 'idle')
+            INSERT INTO users(user_id, status, banned)
+            VALUES($1, 'idle', FALSE)
             ON CONFLICT (user_id) DO NOTHING
         """, user_id)
 
@@ -128,12 +146,58 @@ async def break_pair(user_id: int):
                 await conn.execute("UPDATE users SET status='idle' WHERE user_id IN ($1, $2)", user_id, partner)
         return partner
 
-# Очистка всех активных чатов при старте
 async def clear_active_chats():
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM pairs")
         await conn.execute("DELETE FROM queue")
         await conn.execute("UPDATE users SET status='idle'")
+
+# --- Жалобы ---
+async def save_report(from_user: int, to_user: int, reason: str):
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO reports(from_user, to_user, reason) VALUES($1, $2, $3)",
+            from_user, to_user, reason
+        )
+
+async def get_unresolved_reports():
+    async with db_pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM reports WHERE resolved = FALSE ORDER BY reported_at")
+
+async def mark_report_resolved(report_id: int):
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE reports SET resolved = TRUE WHERE id = $1", report_id)
+
+# --- Баны ---
+async def ban_user(user_id: int, reason: str = "Нарушение правил"):
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO bans(user_id, reason) VALUES($1, $2) ON CONFLICT (user_id) DO UPDATE SET reason = $2",
+            user_id, reason
+        )
+        await conn.execute("UPDATE users SET banned = TRUE WHERE user_id = $1", user_id)
+
+async def unban_user(user_id: int):
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM bans WHERE user_id = $1", user_id)
+        await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", user_id)
+
+async def is_banned(user_id: int) -> bool:
+    async with db_pool.acquire() as conn:
+        return await conn.fetchval("SELECT banned FROM users WHERE user_id = $1", user_id) or False
+
+async def get_banned_users():
+    async with db_pool.acquire() as conn:
+        return await conn.fetch("SELECT user_id, reason FROM bans")
+
+# --- Статистика ---
+async def get_stats():
+    async with db_pool.acquire() as conn:
+        total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
+        in_chat = await conn.fetchval("SELECT COUNT(*) FROM users WHERE status = 'chatting'")
+        in_queue = await conn.fetchval("SELECT COUNT(*) FROM queue")
+        banned = await conn.fetchval("SELECT COUNT(*) FROM users WHERE banned = TRUE")
+        return total_users, in_chat, in_queue, banned
 
 # ---------- Хэндлеры ----------
 @dp.message_handler(commands=['start'])
@@ -141,7 +205,7 @@ async def start(msg: types.Message):
     uid = msg.from_user.id
     await ensure_user(uid)
 
-    # Принудительно завершаем старый чат
+    # Завершаем старый чат
     partner = await break_pair(uid)
     if partner:
         await bot.send_message(partner, "Собеседник перезапустил чат.", reply_markup=main_menu)
@@ -168,6 +232,9 @@ async def search(msg: types.Message):
     uid = msg.from_user.id
     await ensure_user(uid)
 
+    if await is_banned(uid):
+        return await msg.answer("Вы забанены и не можете использовать бота.", reply_markup=main_menu)
+
     partner_now = await get_partner(uid)
     if partner_now:
         await msg.answer("Ты уже общаешься. Нажми «Стоп», чтобы завершить.", reply_markup=chat_menu)
@@ -175,6 +242,11 @@ async def search(msg: types.Message):
 
     partner = await find_partner(uid)
     if partner:
+        if await is_banned(partner):
+            await remove_from_queue(partner)
+            await break_pair(partner)
+            await search(msg)
+            return
         await create_pair(uid, partner)
         await bot.send_message(uid, "Собеседник найден! Можешь писать.", reply_markup=chat_menu)
         await bot.send_message(partner, "Собеседник найден! Можешь писать.", reply_markup=chat_menu)
@@ -207,7 +279,7 @@ async def next_chat(msg: types.Message):
     await search(msg)
 
 # ---------- Жалобы ----------
-user_reporting = {}  # user_id -> partner_id
+user_reporting = {}
 
 @dp.message_handler(lambda m: m.text in ["Пожаловаться"])
 async def report_start(msg: types.Message):
@@ -225,15 +297,17 @@ async def report_reason(msg: types.Message):
     partner = user_reporting.pop(uid)
     reason = msg.text or "Причина не указана"
 
+    await save_report(uid, partner, reason)
+
     if MODERATOR_ID:
         await bot.send_message(
             MODERATOR_ID,
-            f"Жалоба!\n"
+            f"НОВАЯ ЖАЛОБА!\n"
             f"От: <a href='tg://user?id={uid}'>{uid}</a>\n"
             f"На: <a href='tg://user?id={partner}'>{partner}</a>\n"
-            f"Причина: {reason}",
-            parse_mode="HTML",
-            disable_web_page_preview=True
+            f"Причина: {reason}\n"
+            f"/mod — открыть панель",
+            parse_mode="HTML"
         )
 
     await break_pair(uid)
@@ -246,7 +320,7 @@ async def relay(msg: types.Message):
     uid = msg.from_user.id
     partner = await get_partner(uid)
     if not partner:
-        return  # Не в чате — игнорируем
+        return
 
     try:
         if msg.text:
@@ -269,24 +343,124 @@ async def relay(msg: types.Message):
             await bot.send_animation(partner, msg.animation.file_id, caption=msg.caption)
         else:
             await bot.send_message(partner, "Сообщение получено.")
-    except Exception as e:
-        # Если не удалось отправить — разрываем чат
+    except Exception:
         await break_pair(uid)
         await bot.send_message(uid, "Ошибка отправки. Чат завершён.", reply_markup=main_menu)
         await bot.send_message(partner, "Собеседник отключился.", reply_markup=main_menu)
 
 # ---------- Мод-панель ----------
 @dp.message_handler(commands=['mod'])
-async def mod_panel(msg: types.Message):
+async def mod_panel_entry(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID:
-        await msg.answer("У тебя нет доступа.")
+        return await msg.answer("Доступ запрещён.")
+    await msg.answer("Модераторская панель:", reply_markup=mod_menu)
+
+@dp.message_handler(lambda m: m.text == "Жалобы")
+async def show_reports(msg: types.Message):
+    if msg.from_user.id != MODERATOR_ID:
         return
-    await msg.answer("Мод-панель:", reply_markup=mod_menu)
+    reports = await get_unresolved_reports()
+    if not reports:
+        return await msg.answer("Нет активных жалоб.", reply_markup=mod_menu)
+
+    for r in reports:
+        kb = InlineKeyboardMarkup(row_width=2)
+        kb.add(
+            InlineKeyboardButton("Удалить чат", callback_data=f"mod_delchat_{r['from_user']}_{r['to_user']}"),
+            InlineKeyboardButton("Забанить", callback_data=f"mod_ban_{r['to_user']}")
+        )
+        kb.add(InlineKeyboardButton("Игнорировать", callback_data=f"mod_ignore_{r['id']}"))
+
+        await msg.answer(
+            f"<b>Жалоба #{r['id']}</b>\n"
+            f"От: <a href='tg://user?id={r['from_user']}'>{r['from_user']}</a>\n"
+            f"На: <a href='tg://user?id={r['to_user']}'>{r['to_user']}</a>\n"
+            f"Причина: {r['reason'] or '—'}",
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+    await msg.answer("Выберите действие.", reply_markup=mod_menu)
+
+@dp.message_handler(lambda m: m.text == "Статистика")
+async def show_stats(msg: types.Message):
+    if msg.from_user.id != MODERATOR_ID:
+        return
+    total, in_chat, in_queue, banned = await get_stats()
+    await msg.answer(
+        f"<b>Статистика бота</b>\n\n"
+        f"Всего пользователей: {total}\n"
+        f"В чате: {in_chat}\n"
+        f"В поиске: {in_queue}\n"
+        f"Забанено: {banned}",
+        parse_mode="HTML",
+        reply_markup=mod_menu
+    )
+
+@dp.message_handler(lambda m: m.text == "Баны")
+async def show_bans(msg: types.Message):
+    if msg.from_user.id != MODERATOR_ID:
+        return
+    banned = await get_banned_users()
+    if not banned:
+        return await msg.answer("Нет забаненных пользователей.", reply_markup=mod_menu)
+
+    text = "<b>Забаненные пользователи:</b>\n\n"
+    kb = InlineKeyboardMarkup()
+    for b in banned:
+        text += f"• <a href='tg://user?id={b['user_id']}'>{b['user_id']}</a> — {b['reason']}\n"
+        kb.add(InlineKeyboardButton(f"Разбанить {b['user_id']}", callback_data=f"mod_unban_{b['user_id']}"))
+    await msg.answer(text, reply_markup=kb, parse_mode="HTML")
+
+@dp.message_handler(lambda m: m.text == "Выход")
+async def mod_exit(msg: types.Message):
+    if msg.from_user.id != MODERATOR_ID:
+        return
+    await msg.answer("Вы вышли из мод-панели.", reply_markup=ReplyKeyboardRemove())
+
+# --- Inline-колбэки ---
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith("mod_"))
+async def mod_callback(call: types.CallbackQuery):
+    if call.from_user.id != MODERATOR_ID:
+        return await call.answer("Нет доступа.", show_alert=True)
+
+    data = call.data
+
+    try:
+        if data.startswith("mod_delchat_"):
+            _, _, from_id, to_id = data.split("_")
+            from_id, to_id = int(from_id), int(to_id)
+            await break_pair(from_id)
+            await break_pair(to_id)
+            await bot.send_message(from_id, "Чат завершён модератором.")
+            await bot.send_message(to_id, "Чат завершён модератором.")
+            await call.answer("Чат удалён.")
+
+        elif data.startswith("mod_ban_"):
+            _, _, user_id = data.split("_")
+            user_id = int(user_id)
+            await ban_user(user_id, "Жалоба модератора")
+            await break_pair(user_id)
+            await bot.send_message(user_id, "Вы забанены за нарушение правил.")
+            await call.answer("Пользователь забанен.")
+
+        elif data.startswith("mod_ignore_"):
+            _, _, report_id = data.split("_")
+            await mark_report_resolved(int(report_id))
+            await call.answer("Жалоба проигнорирована.")
+
+        elif data.startswith("mod_unban_"):
+            _, _, user_id = data.split("_")
+            user_id = int(user_id)
+            await unban_user(user_id)
+            await bot.send_message(user_id, "Вы разбанены.")
+            await call.answer("Пользователь разбанен.")
+    except Exception as e:
+        await call.answer("Ошибка обработки.", show_alert=True)
 
 # ---------- Запуск ----------
 async def on_startup(_):
     await init_db()
-    await clear_active_chats()  # Очистка старых чатов
+    await clear_active_chats()
     print("Бот запущен. Старые чаты очищены.")
 
 async def on_shutdown(_):
