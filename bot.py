@@ -2,18 +2,15 @@ import os
 import asyncpg
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-# ---------- Конфигурация ----------
+# Читаем переменные окружения
 TOKEN = os.getenv("BOT_TOKEN")
 PGHOST = os.getenv("PGHOST")
 PGUSER = os.getenv("PGUSER")
 PGPASSWORD = os.getenv("PGPASSWORD")
 PGDATABASE = os.getenv("PGDATABASE")
 PGPORT = int(os.getenv("PGPORT", "5432"))
-
-# ID модератора задаётся через переменные окружения
-MODERATOR_ID = int(os.getenv("MODERATOR_ID", "0"))
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
@@ -36,20 +33,6 @@ chat_menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton("⏹ Стоп"), KeyboardButton("➡️ Следующий")],
         [KeyboardButton("⚠️ Пожаловаться")]
-    ],
-    resize_keyboard=True
-)
-
-waiting_menu = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton("❌ Отмена")]
-    ],
-    resize_keyboard=True
-)
-
-mod_menu = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton("📋 Жалобы"), KeyboardButton("📊 Статистика")]
     ],
     resize_keyboard=True
 )
@@ -131,11 +114,15 @@ async def break_pair(user_id: int):
                 await conn.execute("UPDATE users SET status='idle' WHERE user_id IN ($1, $2)", user_id, partner)
         return partner
 
-# ---------- Хэндлеры команд и кнопок ----------
+# ---------- Хэндлеры ----------
 @dp.message_handler(commands=['start'])
 async def start(msg: types.Message):
     await ensure_user(msg.from_user.id)
-    await msg.answer("Привет! Я анонимный чат-бот.\nВыбери действие:", reply_markup=main_menu)
+    await msg.answer(
+        "Привет! Я анонимный чат-бот.\n"
+        "Выбери действие:",
+        reply_markup=main_menu
+    )
 
 @dp.message_handler(lambda m: m.text in ["ℹ️ Помощь", "/help"])
 async def help_cmd(msg: types.Message):
@@ -159,14 +146,7 @@ async def search(msg: types.Message):
     else:
         await add_to_queue(uid)
         await set_status(uid, 'waiting')
-        await msg.answer("⏳ Ожидание собеседника...", reply_markup=waiting_menu)
-
-@dp.message_handler(lambda m: m.text in ["❌ Отмена"])
-async def cancel_search(msg: types.Message):
-    uid = msg.from_user.id
-    await remove_from_queue(uid)
-    await set_status(uid, 'idle')
-    await msg.answer("Поиск отменён.", reply_markup=main_menu)
+        await msg.answer("⏳ Ожидание собеседника...", reply_markup=main_menu)
 
 @dp.message_handler(lambda m: m.text in ["⏹ Стоп", "/stop"])
 async def stop(msg: types.Message):
@@ -184,46 +164,47 @@ async def next_chat(msg: types.Message):
     await stop(msg)
     await search(msg)
 
-# ---------- Жалобы ----------
-user_reporting = {}  # user_id -> partner_id
-
 @dp.message_handler(lambda m: m.text in ["⚠️ Пожаловаться"])
-async def report_start(msg: types.Message):
-    uid = msg.from_user.id
-    partner = await get_partner(uid)
+async def report(msg: types.Message):
+    partner = await get_partner(msg.from_user.id)
     if partner:
-        user_reporting[uid] = partner
-        await msg.answer("Опиши причину жалобы текстом:", reply_markup=ReplyKeyboardRemove())
+        # Здесь можно добавить отправку админу
+        await msg.answer("⚠️ Жалоба отправлена. Собеседник будет проверен.", reply_markup=chat_menu)
     else:
         await msg.answer("Ты не в чате.", reply_markup=main_menu)
 
-@dp.message_handler(lambda m: m.from_user.id in user_reporting)
-async def report_reason(msg: types.Message):
+# ---------- Пересылка сообщений ----------
+@dp.message_handler(content_types=types.ContentTypes.ANY)
+async def relay(msg: types.Message):
     uid = msg.from_user.id
-    partner = user_reporting.pop(uid)
-    reason = msg.text
-
-    # Отправляем жалобу модератору
-    if MODERATOR_ID:
-        await bot.send_message(
-            MODERATOR_ID,
-            f"⚠️ Жалоба!\n"
-            f"От: {uid}\n"
-            f"На: {partner}\n"
-            f"Причина: {reason}"
-        )
-
-    # Завершаем чат у обоих
-    await break_pair(uid)
-    await bot.send_message(uid, "Жалоба отправлена. Чат завершён.", reply_markup=main_menu)
-    await bot.send_message(partner, "❌ Собеседник покинул чат.", reply_markup=main_menu)
-
-# ---------- Мод-панель ----------
-@dp.message_handler(commands=['mod'])
-async def mod_panel(msg: types.Message):
-    if msg.from_user.id != MODERATOR_ID:
-        await msg.answer("⛔ У тебя нет доступа к мод‑панели.")
+    partner = await get_partner(uid)
+    if not partner:
         return
-    await msg.answer("Добро пожаловать в мод‑панель:", reply_markup=mod_menu)
 
-# ---------- Пересылка сообщений (вс
+    if msg.text:
+        await bot.send_message(partner, msg.text)
+    elif msg.photo:
+        await bot.send_photo(partner, msg.photo[-1].file_id, caption=msg.caption)
+    elif msg.sticker:
+        await bot.send_sticker(partner, msg.sticker.file_id)
+    elif msg.voice:
+        await bot.send_voice(partner, msg.voice.file_id, caption=msg.caption)
+    elif msg.document:
+        await bot.send_document(partner, msg.document.file_id, caption=msg.caption)
+    elif msg.video:
+        await bot.send_video(partner, msg.video.file_id, caption=msg.caption)
+    else:
+        await bot.send_message(partner, "Получено сообщение.")
+
+# ---------- Запуск ----------
+async def on_startup(_):
+    await init_db()
+    print("Bot started and DB pool initialized")
+
+async def on_shutdown(_):
+    if db_pool:
+        await db_pool.close()
+    await bot.session.close()
+
+if __name__ == "__main__":
+    executor.start_polling(dp, skip_updates=True, on_startup=on_startup, on_shutdown=on_shutdown)
