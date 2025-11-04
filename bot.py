@@ -222,4 +222,6 @@ async def report_reason(msg: types.Message):
 @dp.message_handler(commands=['mod'])
 async def mod_panel(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID:
-        await msg.answer("⛔ У тебя нет доступа к мод‑пан
+        await msg.answer("⛔ У тебя нет доступа к мод‑панели.")
+        return
+    await msg.answer("Добро пожаловать в мод‑панель:", reply_markup=mod_menu)
