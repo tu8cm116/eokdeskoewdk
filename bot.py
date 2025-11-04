@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 
 # ---------- Конфигурация ----------
 TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL")  # Опционально
 MODERATOR_ID = int(os.getenv("MODERATOR_ID", "0"))  # Твой ID: 684261784
 
 if not TOKEN:
@@ -27,11 +27,11 @@ dp = Dispatcher(bot)
 db_pool = None
 
 # ---------- Память (если нет БД) ----------
-memory_queue = deque()  # (user_id, timestamp)
-memory_pairs = {}       # user_id -> partner_id
-memory_status = {}      # user_id -> 'idle'/'waiting'/'chatting'
-memory_banned = set()   # забаненные
-memory_reports = []     # [{id, from, to, reason}]
+memory_queue = deque()          # (user_id, timestamp)
+memory_pairs = {}               # user_id -> partner_id
+memory_status = {}              # user_id -> status
+memory_banned = set()           # забаненные
+memory_reports = []             # список жалоб
 
 # ---------- Клавиатуры ----------
 main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -73,7 +73,7 @@ async def init_db():
         log.error(f"БД ошибка: {e}")
         return False
 
-# ---------- Вспомогательные функции ----------
+# ---------- Вспомогательные ----------
 async def ensure_user(uid):
     if db_pool:
         async with db_pool.acquire() as conn:
@@ -117,8 +117,8 @@ async def create_pair(a, b):
         memory_pairs[a] = b
         memory_pairs[b] = a
         memory_status[a] = memory_status[b] = 'chatting'
-        await remove_from_queue(a)  # ← await!
-        await remove_from_queue(b)  # ← await!
+        await remove_from_queue(a)
+        await remove_from_queue(b)
     log.info(f"Пара: {a} <-> {b}")
 
 async def get_partner(uid):
@@ -164,6 +164,10 @@ async def start(msg: types.Message):
 async def get_id(msg: types.Message):
     await msg.answer(f"Твой ID: <code>{msg.from_user.id}</code>", parse_mode="HTML")
 
+@dp.message_handler(lambda m: m.text == "Помощь")
+async def help_cmd(msg: types.Message):
+    await msg.answer("• Найти — начать\n• Стоп — выйти\n• Пожаловаться — если плохо", reply_markup=main_menu)
+
 @dp.message_handler(lambda m: m.text == "Найти собеседника")
 async def search(msg: types.Message):
     uid = msg.from_user.id
@@ -173,7 +177,7 @@ async def search(msg: types.Message):
         return await msg.answer("Ты уже в чате.", reply_markup=chat_menu)
 
     await add_to_queue(uid)
-    await msg.answer("Ищем... (до 30 сек)", reply_markup=waiting_menu)
+    await msg.answer("Ищем собеседника... (до 30 сек)", reply_markup=waiting_menu)
 
     task = asyncio.create_task(wait_for_partner(uid))
     waiting_tasks[uid] = task
@@ -269,7 +273,7 @@ async def show_reports(msg: types.Message):
     if not memory_reports:
         return await msg.answer("Нет жалоб.", reply_markup=mod_menu)
     for r in memory_reports:
-        kb = InlineKeyboardMarkup()
+        kb = InlineKeyboardMarkup(row_width=1)
         kb.add(InlineKeyboardButton("Удалить чат", callback_data=f"del_{r['from']}_{r['to']}"))
         kb.add(InlineKeyboardButton("Забанить", callback_data=f"ban_{r['to']}"))
         kb.add(InlineKeyboardButton("Игнор", callback_data=f"ign_{r['id']}"))
@@ -304,7 +308,7 @@ async def show_bans(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID: return
     if not memory_banned:
         return await msg.answer("Нет забаненных.", reply_markup=mod_menu)
-    kb = InlineKeyboardMarkup()
+    kb = InlineKeyboardMarkup(row_width=1)
     for uid in memory_banned:
         kb.add(InlineKeyboardButton(f"Разбанить {uid}", callback_data=f"unban_{uid}"))
     await msg.answer("Забаненные:", reply_markup=kb)
@@ -336,6 +340,7 @@ async def mod_cb(call: types.CallbackQuery):
             await call.answer("Забанен")
         elif d.startswith("ign_"):
             rid = int(d.split("_")[1])
+            global memory_reports
             memory_reports = [r for r in memory_reports if r['id'] != rid]
             await call.answer("Игнор")
         elif d.startswith("unban_"):
