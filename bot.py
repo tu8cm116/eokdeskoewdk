@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 # ---------- Конфигурация ----------
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")  # Опционально
-MODERATOR_ID = int(os.getenv("MODERATOR_ID", "0"))  # Твой ID: 684261784
+MODERATOR_ID = int(os.getenv("MODERATOR_ID", "0"))  # ТВОЙ ID: 684261784
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN не задан!")
@@ -148,9 +148,19 @@ async def is_banned(uid):
     else:
         return uid in memory_banned
 
-# ---------- Хэндлеры ----------
+# ---------- ХЭНДЛЕРЫ (ВАЖНО: /mod и /id — ПЕРВЫМИ!) ----------
 waiting_tasks = {}
 user_reporting = {}
+
+@dp.message_handler(commands=['mod'])
+async def mod_entry(msg: types.Message):
+    if msg.from_user.id != MODERATOR_ID:
+        return await msg.answer("Доступ запрещён.")
+    await msg.answer("Модераторская панель:", reply_markup=mod_menu)
+
+@dp.message_handler(commands=['id'])
+async def get_id(msg: types.Message):
+    await msg.answer(f"Твой ID: <code>{msg.from_user.id}</code>", parse_mode="HTML")
 
 @dp.message_handler(commands=['start'])
 async def start(msg: types.Message):
@@ -159,10 +169,6 @@ async def start(msg: types.Message):
     await break_pair(uid)
     await remove_from_queue(uid)
     await msg.answer("Привет! Анонимный чат.\nНажми «Найти собеседника».", reply_markup=main_menu)
-
-@dp.message_handler(commands=['id'])
-async def get_id(msg: types.Message):
-    await msg.answer(f"Твой ID: <code>{msg.from_user.id}</code>", parse_mode="HTML")
 
 @dp.message_handler(lambda m: m.text == "Помощь")
 async def help_cmd(msg: types.Message):
@@ -243,30 +249,7 @@ async def report_reason(msg: types.Message):
     if MODERATOR_ID:
         await bot.send_message(MODERATOR_ID, f"НОВАЯ ЖАЛОБА!\nОт: {uid}\nНа: {partner}\nПричина: {reason}\nКоманда: /mod")
 
-@dp.message_handler(content_types=types.ContentTypes.ANY)
-async def relay(msg: types.Message):
-    partner = await get_partner(msg.from_user.id)
-    if not partner: return
-    try:
-        if msg.text: await bot.send_message(partner, msg.text)
-        elif msg.photo: await bot.send_photo(partner, msg.photo[-1].file_id, caption=msg.caption)
-        elif msg.sticker: await bot.send_sticker(partner, msg.sticker.file_id)
-        elif msg.voice: await bot.send_voice(partner, msg.voice.file_id)
-        elif msg.document: await bot.send_document(partner, msg.document.file_id)
-        elif msg.video: await bot.send_video(partner, msg.video.file_id)
-        else: await bot.send_message(partner, "Сообщение получено.")
-    except Exception as e:
-        log.error(f"Ошибка пересылки: {e}")
-        await break_pair(msg.from_user.id)
-        await msg.answer("Ошибка. Чат прерван.", reply_markup=main_menu)
-
-# ---------- Мод-панель ----------
-@dp.message_handler(commands=['mod'])
-async def mod_entry(msg: types.Message):
-    if msg.from_user.id != MODERATOR_ID:
-        return await msg.answer("Доступ запрещён.")
-    await msg.answer("Модераторская панель:", reply_markup=mod_menu)
-
+# ---------- Мод-кнопки (после всех текстовых) ----------
 @dp.message_handler(lambda m: m.text == "Жалобы")
 async def show_reports(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID: return
@@ -318,6 +301,25 @@ async def mod_exit(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID: return
     await msg.answer("Выход из мод-панели.", reply_markup=ReplyKeyboardRemove())
 
+# ---------- Пересылка (в самом конце!) ----------
+@dp.message_handler(content_types=types.ContentTypes.ANY)
+async def relay(msg: types.Message):
+    partner = await get_partner(msg.from_user.id)
+    if not partner: return
+    try:
+        if msg.text: await bot.send_message(partner, msg.text)
+        elif msg.photo: await bot.send_photo(partner, msg.photo[-1].file_id, caption=msg.caption)
+        elif msg.sticker: await bot.send_sticker(partner, msg.sticker.file_id)
+        elif msg.voice: await bot.send_voice(partner, msg.voice.file_id)
+        elif msg.document: await bot.send_document(partner, msg.document.file_id)
+        elif msg.video: await bot.send_video(partner, msg.video.file_id)
+        else: await bot.send_message(partner, "Сообщение получено.")
+    except Exception as e:
+        log.error(f"Ошибка пересылки: {e}")
+        await break_pair(msg.from_user.id)
+        await msg.answer("Ошибка. Чат прерван.", reply_markup=main_menu)
+
+# ---------- Callback-кнопки ----------
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith(("del_", "ban_", "ign_", "unban_")))
 async def mod_cb(call: types.CallbackQuery):
     if call.from_user.id != MODERATOR_ID:
