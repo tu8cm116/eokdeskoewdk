@@ -55,6 +55,9 @@ chat_menu.add(KeyboardButton("Пожаловаться"))
 waiting_menu = ReplyKeyboardMarkup(resize_keyboard=True)
 waiting_menu.add(KeyboardButton("Отмена"))
 
+report_cancel_menu = ReplyKeyboardMarkup(resize_keyboard=True)
+report_cancel_menu.add(KeyboardButton("Отменить жалобу"))  # ← НОВАЯ!
+
 mod_menu = ReplyKeyboardMarkup(resize_keyboard=True)
 mod_menu.add(KeyboardButton("Жалобы"), KeyboardButton("Статистика"))
 mod_menu.add(KeyboardButton("Баны"), KeyboardButton("Выход"))
@@ -298,12 +301,10 @@ async def report_button(msg: types.Message, state: FSMContext):
     partner = await get_partner(uid)
     await state.update_data(partner=partner)
     await ReportState.waiting_reason.set()
-    cancel_kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    cancel_kb.add(KeyboardButton("Отмена"))
-    await msg.answer("Опиши проблему:", reply_markup=cancel_kb)
+    await msg.answer("Опиши проблему:", reply_markup=report_cancel_menu)
 
-# ОТМЕНА ЖАЛОБЫ — ВОЗВРАЩАЕТ В ЧАТ!
-@dp.message_handler(lambda m: m.text == "Отмена", state=ReportState.waiting_reason)
+# ОТМЕНИТЬ ЖАЛОБУ — НОВАЯ КНОПКА!
+@dp.message_handler(lambda m: m.text == "Отменить жалобу", state=ReportState.waiting_reason)
 async def cancel_report(msg: types.Message, state: FSMContext):
     await state.finish()
     await msg.answer("Жалоба отменена. Продолжайте общение.", reply_markup=chat_menu)
@@ -343,7 +344,7 @@ async def report_reason(msg: types.Message, state: FSMContext):
             parse_mode="HTML"
         )
 
-# --- ОТМЕНА ПОИСКА (ТОЛЬКО В ПОИСКЕ!) ---
+# --- ОТМЕНА ПОИСКА (ТОЛЬКО "Отмена") ---
 @dp.message_handler(lambda m: m.text == "Отмена", state=None)
 async def cancel_search(msg: types.Message, state: FSMContext):
     uid = msg.from_user.id
@@ -689,4 +690,3 @@ async def on_startup(_):
 
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
-    
