@@ -42,6 +42,7 @@ memory_banned = set()
 memory_reports = []
 all_complaints = {}
 user_codes = {}
+user_reporting = {}  # ← ДОБАВЛЕНО: отслеживание пользователей в процессе жалобы
 
 # ---------- КЛАВИАТУРЫ ----------
 main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -56,7 +57,7 @@ waiting_menu = ReplyKeyboardMarkup(resize_keyboard=True)
 waiting_menu.add(KeyboardButton("Отмена"))
 
 report_cancel_menu = ReplyKeyboardMarkup(resize_keyboard=True)
-report_cancel_menu.add(KeyboardButton("Отменить жалобу"))  # ← НОВАЯ!
+report_cancel_menu.add(KeyboardButton("Отменить жалобу"))
 
 mod_menu = ReplyKeyboardMarkup(resize_keyboard=True)
 mod_menu.add(KeyboardButton("Жалобы"), KeyboardButton("Статистика"))
@@ -292,45 +293,62 @@ async def search_button(msg: types.Message):
         return
     await search(msg)
 
-# --- ЖАЛОБА: НАЧАЛО ---
-# --- Пожаловаться (с Отмена) ---
-@dp.message_handler(lambda m: m.text == "Пожаловаться")
-async def report_button(msg: types.Message):
-    if not await get_partner(msg.from_user.id):
+# --- ОСНОВНЫЕ КНОПКИ ЧАТА (должны работать ВСЕГДА когда пользователь в чате) ---
+@dp.message_handler(lambda m: m.text in ["Стоп", "Следующий", "Пожаловаться"] and await get_partner(m.from_user.id))
+async def chat_buttons(msg: types.Message):
+    uid = msg.from_user.id
+    
+    # Если пользователь в процессе жалобы, но нажал другую кнопку - отменяем жалобу
+    if uid in user_reporting and msg.text != "Пожаловаться":
+        user_reporting.pop(uid, None)
+        await msg.answer("Жалоба отменена.", reply_markup=chat_menu)
         return
-    await report(msg)
+    
+    if msg.text == "Стоп":
+        await stop_cmd(msg)
+    elif msg.text == "Следующий":
+        await next_cmd(msg)
+    elif msg.text == "Пожаловаться":
+        await report(msg)
 
+# --- ЖАЛОБА: НАЧАЛО ---
 @dp.message_handler(commands=['report'])
 async def report(msg: types.Message):
     uid = msg.from_user.id
     partner = await get_partner(uid)
     if partner:
         user_reporting[uid] = partner
-        cancel_kb = ReplyKeyboardMarkup(resize_keyboard=True)
-        cancel_kb.add(KeyboardButton("Отмена"))
-        await msg.answer("Опиши проблему:", reply_markup=cancel_kb)
+        await msg.answer("Опиши проблему:", reply_markup=report_cancel_menu)
     else:
         await msg.answer("Ты не в чате.", reply_markup=main_menu)
 
-@dp.message_handler(lambda m: m.text == "Отмена" and m.from_user.id in user_reporting)
+# --- ОТМЕНА ЖАЛОБЫ ---
+@dp.message_handler(lambda m: m.text == "Отменить жалобу" and m.from_user.id in user_reporting)
 async def cancel_report(msg: types.Message):
     uid = msg.from_user.id
     user_reporting.pop(uid, None)
     await msg.answer("Жалоба отменена. Продолжайте общение.", reply_markup=chat_menu)
 
-@dp.message_handler(lambda m: m.from_user.id in user_reporting and m.text != "Отмена")
+# --- ОБРАБОТКА ТЕКСТА ЖАЛОБЫ ---
+@dp.message_handler(lambda m: m.from_user.id in user_reporting and m.text != "Отменить жалобу")
 async def report_reason(msg: types.Message):
     uid = msg.from_user.id
-    partner = user_reporting.pop(uid)
+    partner = user_reporting.pop(uid, None)
+    if not partner:
+        return
+    
     reason = msg.text or "Без причины"
     report_id = len(memory_reports) + 1
     from_code = await get_user_code(uid) or "—"
     to_code = await get_user_code(partner) or "—"
+    
     memory_reports.append({"id": report_id, "from": uid, "to": partner, "reason": reason, "ignored": False})
     all_complaints[partner] = all_complaints.get(partner, 0) + 1
+    
     await break_pair(uid)
     await msg.answer("Жалоба отправлена.", reply_markup=main_menu)
     await bot.send_message(partner, "Чат завершён из-за жалобы.", reply_markup=main_menu)
+    
     count = all_complaints[partner]
     if MODERATOR_ID:
         await bot.send_message(
@@ -354,18 +372,6 @@ async def cancel_search(msg: types.Message, state: FSMContext):
     await remove_from_queue(uid)
     await state.finish()
     await msg.answer("Поиск отменён.", reply_markup=main_menu)
-
-@dp.message_handler(lambda m: m.text == "Стоп")
-async def stop_button(msg: types.Message):
-    if not await get_partner(msg.from_user.id):
-        return
-    await stop_cmd(msg)
-
-@dp.message_handler(lambda m: m.text == "Следующий")
-async def next_button(msg: types.Message):
-    if not await get_partner(msg.from_user.id):
-        return
-    await next_cmd(msg)
 
 # --- КОМАНДЫ ---
 @dp.message_handler(commands=['search'])
@@ -658,6 +664,10 @@ async def mod_cb(call: types.CallbackQuery):
 # --- ПЕРЕСЫЛКА ---
 @dp.message_handler(content_types=types.ContentTypes.ANY)
 async def relay(msg: types.Message):
+    # Если пользователь в процессе жалобы, не пересылаем сообщения
+    if msg.from_user.id in user_reporting:
+        return
+        
     partner = await get_partner(msg.from_user.id)
     if not partner:
         return
