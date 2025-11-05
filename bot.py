@@ -240,7 +240,7 @@ async def ban_user_complete(uid):
     # Завершаем чат если был в паре
     partner = await break_pair(uid)
     if partner:
-        await bot.send_message(partner, "😔 Собеседник завершил чат.", reply_markup=main_menu)
+        await bot.send_message(partner, "Собеседник завершил чат.", reply_markup=main_menu)
     
     # Отправляем сообщение о блокировке
     await bot.send_message(uid, "🚫 Вы были заблокированы модерацией. Получите инструкции по обжалованию по кнопке «Инфо»", reply_markup=main_menu)
@@ -274,7 +274,7 @@ async def ban_user_auto(uid):
     # Завершаем чат если был в паре
     partner = await break_pair(uid)
     if partner:
-        await bot.send_message(partner, "😔 Собеседник завершил чат.", reply_markup=main_menu)
+        await bot.send_message(partner, "Собеседник завершил чат.", reply_markup=main_menu)
     
     # Отправляем сообщение об автобане
     await bot.send_message(uid, "😔 Вы забанены за многочисленные жалобы. Получите инструкции по обжалованию по кнопке «Инфо»", reply_markup=main_menu)
@@ -363,9 +363,9 @@ async def report(msg: types.Message):
     partner = await get_partner(uid)
     if partner:
         user_reporting[uid] = partner
-        await msg.answer("📝 Опишите причину жалобы:", reply_markup=report_cancel_menu)
+        await msg.answer("Опишите причину жалобы:", reply_markup=report_cancel_menu)
     else:
-        await msg.answer("❌ Ты не в чате.", reply_markup=main_menu)
+        await msg.answer("Ты не в чате.", reply_markup=main_menu)
 
 # --- ОТМЕНА ЖАЛОБЫ ---
 @dp.message_handler(lambda m: m.text == "❌ Отменить жалобу")
@@ -375,7 +375,7 @@ async def cancel_report(msg: types.Message):
         return
     
     user_reporting.pop(uid, None)
-    await msg.answer("✅ Жалоба отменена. Продолжайте общение.", reply_markup=chat_menu)
+    await msg.answer("Жалоба отменена. Продолжайте общение.", reply_markup=chat_menu)
 
 # --- ОБРАБОТКА ТЕКСТА ЖАЛОБЫ ---
 @dp.message_handler(lambda m: m.from_user.id in user_reporting and m.text != "❌ Отменить жалобу")
@@ -394,8 +394,8 @@ async def report_reason(msg: types.Message):
     all_complaints[partner] = all_complaints.get(partner, 0) + 1
     
     await break_pair(uid)
-    await msg.answer("✅ Жалоба отправлена и будет рассмотрена модерацией.", reply_markup=main_menu)
-    await bot.send_message(partner, "😔 Диалог завершен из-за жалобы собеседника.", reply_markup=main_menu)
+    await msg.answer("Жалоба отправлена и будет рассмотрена модерацией.", reply_markup=main_menu)
+    await bot.send_message(partner, "Диалог завершен из-за жалобы собеседника.", reply_markup=main_menu)
     
     count = all_complaints[partner]
     if MODERATOR_ID:
@@ -428,7 +428,7 @@ async def search(msg: types.Message):
     if await is_banned(uid):
         return await msg.answer("🚫 Вы были заблокированы. Попробуйте снова после снятия блокировки.", reply_markup=main_menu)
     if await get_partner(uid):
-        return await msg.answer("💬 Ты уже в чате.", reply_markup=chat_menu)
+        return await msg.answer("Ты уже в чате.", reply_markup=chat_menu)
 
     await add_to_queue(uid)
     await msg.answer("🔍 Ищем собеседника...", reply_markup=waiting_menu)
@@ -447,15 +447,15 @@ async def wait_for_partner(uid):
             partner = await find_partner(uid)
             if partner:
                 await create_pair(uid, partner)
-                await bot.send_message(uid, "✅ Собеседник найден! Соблюдайте правила.", reply_markup=chat_menu)
-                await bot.send_message(partner, "✅ Собеседник найден! Соблюдайте правила.", reply_markup=chat_menu)
+                await bot.send_message(uid, "Собеседник найден! Соблюдайте правила.", reply_markup=chat_menu)
+                await bot.send_message(partner, "Собеседник найден! Соблюдайте правила.", reply_markup=chat_menu)
                 if uid in waiting_tasks:
                     del waiting_tasks[uid]
                 return
         await remove_from_queue(uid)
         if uid in waiting_tasks:
             del waiting_tasks[uid]
-        await bot.send_message(uid, "😔 К сожалению, нет свободных или активных пользователей. Попробуй позже.", reply_markup=main_menu)
+        await bot.send_message(uid, "К сожалению, нет свободных или активных пользователей. Попробуй позже.", reply_markup=main_menu)
     except asyncio.CancelledError:
         pass
 
@@ -476,8 +476,8 @@ async def stop_cmd(msg: types.Message):
         del waiting_tasks[uid]
     partner = await break_pair(uid)
     if partner:
-        await bot.send_message(partner, "😔 Собеседник завершил чат.", reply_markup=main_menu)
-    await msg.answer("⛔️ Диалог завершен.", reply_markup=main_menu)
+        await bot.send_message(partner, "Собеседник завершил чат.", reply_markup=main_menu)
+    await msg.answer("Диалог завершен.", reply_markup=main_menu)
 
 @dp.message_handler(commands=['next'])
 async def next_cmd(msg: types.Message):
@@ -510,7 +510,7 @@ async def show_reports(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID: return
     active = [r for r in memory_reports if not r.get('ignored', False)]
     if not active:
-        return await msg.answer("📭 Нет жалоб.", reply_markup=mod_menu)
+        return await msg.answer("Нет жалоб.", reply_markup=mod_menu)
     for r in active:
         from_code = await get_user_code(r['from']) or "—"
         to_code = await get_user_code(r['to']) or "—"
@@ -521,8 +521,7 @@ async def show_reports(msg: types.Message):
             f"🚩 <b>Жалоба #{r['id']}</b>\n"
             f"От: <code>{r['from']}</code> (<code>{from_code}</code>)\n"
             f"На: <code>{r['to']}</code> (<code>{to_code}</code>)\n"
-            f"Причина: {r['reason']}\n"
-            f"Время: {r.get('timestamp', '—')}",
+            f"Причина: {r['reason']}",
             reply_markup=kb,
             parse_mode="HTML"
         )
@@ -538,7 +537,7 @@ async def stats(msg: types.Message):
     users_with_complaints = len(all_complaints)
 
     await msg.answer(
-        f"📊 Статистика:\n👥 Пользователей: {total_users}\n💬 В чате: {chatting}\n🔍 В поиске: {searching}\n🚫 Забанено: {banned}",
+        f"Статистика:\nПользователей: {total_users}\nВ чате: {chatting}\nВ поиске: {searching}\nЗабанено: {banned}",
         parse_mode="HTML",
         reply_markup=mod_menu
     )
@@ -547,11 +546,11 @@ async def stats(msg: types.Message):
 async def show_bans(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID: return
     if not memory_banned:
-        return await msg.answer("📭 Нет забаненных.", reply_markup=mod_menu)
+        return await msg.answer("Нет забаненных.", reply_markup=mod_menu)
     kb = InlineKeyboardMarkup()
     for uid in memory_banned:
-        kb.add(InlineKeyboardButton(f"✅ Разбанить {uid}", callback_data=f"unban_{uid}"))
-    await msg.answer("🚫 Забаненные:", reply_markup=kb)
+        kb.add(InlineKeyboardButton(f"Разбанить {uid}", callback_data=f"unban_{uid}"))
+    await msg.answer("Забаненные:", reply_markup=kb)
 
 # /user — ВСЕ ЖАЛОБЫ
 @dp.message_handler(commands=['user'])
@@ -585,12 +584,12 @@ async def user_info(msg: types.Message):
     user_reports = [r for r in memory_reports if r['to'] == uid]
 
     response = (
-        f"👤 Пользователь\n"
-        f"🆔 ID: <code>{uid}</code>\n"
-        f"🔑 Код: <code>{code}</code>\n"
-        f"📊 Статус: {status}\n"
-        f"🚫 Забанен: {banned}\n"
-        f"🚩 Жалоб: {total_complaints}\n\n"
+        f"Пользователь\n"
+        f"ID: <code>{uid}</code>\n"
+        f"Код: <code>{code}</code>\n"
+        f"Статус: {status}\n"
+        f"Забанен: {banned}\n"
+        f"Жалоб: {total_complaints}\n\n"
     )
 
     if user_reports:
@@ -599,8 +598,7 @@ async def user_info(msg: types.Message):
             from_code = await get_user_code(r['from']) or "—"
             response += (
                 f"• От: <code>{r['from']}</code> (<code>{from_code}</code>)\n"
-                f"  Причина: {r['reason']}\n"
-                f"  Время: {r.get('timestamp', '—')}\n\n"
+                f"  Причина: {r['reason']}\n\n"
             )
     else:
         response += "📭 Жалоб нет."
@@ -628,10 +626,10 @@ async def ban_user(msg: types.Message):
             async with db_pool.acquire() as conn:
                 uid = await conn.fetchval("SELECT user_id FROM users WHERE code = $1", query.upper())
     if not uid:
-        return await msg.answer("❌ Не найден.")
+        return await msg.answer("Не найден.")
     
     await ban_user_complete(uid)
-    await msg.answer("✅ Забанен.")
+    await msg.answer("Забанен.")
 
 # --- /unban ---
 @dp.message_handler(commands=['unban'])
@@ -654,14 +652,14 @@ async def unban_user(msg: types.Message):
             async with db_pool.acquire() as conn:
                 uid = await conn.fetchval("SELECT user_id FROM users WHERE code = $1", query.upper())
     if not uid:
-        return await msg.answer("❌ Не найден.")
+        return await msg.answer("Не найден.")
     memory_banned.discard(uid)
     if db_pool:
         async with db_pool.acquire() as conn:
             await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
     await bot.send_message(uid, "🎉 Поздравляем, вы были разблокированы модерацией. Ваши жалобы обнулены. Впредь, соблюдайте правила. Приятного общения.", reply_markup=main_menu)
     await clear_complaints(uid)
-    await msg.answer("✅ Разбанен. Жалобы обнулены.")
+    await msg.answer("Разбанен. Жалобы обнулены.")
 
 # --- CALLBACK ---
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith(("ban_", "ign_", "unban_")))
@@ -673,7 +671,7 @@ async def mod_cb(call: types.CallbackQuery):
         if d.startswith("ban_"):
             uid = int(d.split("_")[1])
             await ban_user_complete(uid)
-            await call.answer("✅ Забанен")
+            await call.answer("Забанен")
         elif d.startswith("ign_"):
             rid = int(d.split("_")[1])
             for r in memory_reports:
@@ -689,10 +687,10 @@ async def mod_cb(call: types.CallbackQuery):
                     await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
             await bot.send_message(uid, "🎉 Поздравляем, вы были разблокированы модерацией. Ваши жалобы обнулены. Впредь, соблюдайте правила. Приятного общения.", reply_markup=main_menu)
             await clear_complaints(uid)
-            await call.answer("✅ Разбанен. Жалобы обнулены.")
+            await call.answer("Разбанен. Жалобы обнулены.")
     except Exception as e:
         log.error(f"Ошибка: {e}")
-        await call.answer("❌ Ошибка")
+        await call.answer("Ошибка")
 
 # --- ПЕРЕСЫЛКА ---
 @dp.message_handler(content_types=types.ContentTypes.ANY)
@@ -718,11 +716,11 @@ async def relay(msg: types.Message):
         elif msg.video:
             await bot.send_video(partner, msg.video.file_id)
         else:
-            await bot.send_message(partner, "❌ Данный тип сообщения не поддерживается.")
+            await bot.send_message(partner, "Данный тип сообщения не поддерживается.")
     except Exception as e:
         log.error(f"Ошибка: {e}")
         await break_pair(msg.from_user.id)
-        await msg.answer("❌ Ошибка. Чат прерван.", reply_markup=main_menu)
+        await msg.answer("Ошибка. Чат прерван.", reply_markup=main_menu)
 
 # ---------- ЗАПУСК ----------
 async def on_startup(_):
