@@ -198,6 +198,7 @@ async def get_partner(uid):
     else:
         return memory_pairs.get(uid)
 
+# ---------- РАЗРЫВ ПАРЫ + АВТООТМЕНА ЖАЛОБЫ ----------
 async def break_pair(uid):
     partner = await get_partner(uid)
     if partner:
@@ -209,6 +210,13 @@ async def break_pair(uid):
             memory_pairs.pop(partner, None)
         memory_status[uid] = memory_status[partner] = 'idle'
         log.info(f"Разрыв: {uid} <-> {partner}")
+
+        # АВТООТМЕНА ЖАЛОБЫ ПРИ ВЫХОДЕ
+        if uid in user_reporting:
+            user_reporting.pop(uid, None)
+        if partner in user_reporting:
+            user_reporting.pop(partner, None)
+
     return partner
 
 async def is_banned(uid):
@@ -245,7 +253,7 @@ async def clear_complaints(uid):
 
 # ---------- ХЭНДЛЕРЫ ----------
 waiting_tasks = {}
-user_reporting = {}
+user_reporting = {}  # ← Жалоба в процессе
 
 # --- ОСНОВНЫЕ ---
 @dp.message_handler(commands=['start'])
@@ -325,12 +333,14 @@ async def report(msg: types.Message):
     else:
         await msg.answer("Ты не в чате.", reply_markup=main_menu)
 
+# --- ОТМЕНА ЖАЛОБЫ: ВОЗВРАЩАЕТ КНОПКИ ЧАТА ---
 @dp.message_handler(lambda m: m.text == "Отмена" and m.from_user.id in user_reporting)
 async def cancel_report(msg: types.Message):
     uid = msg.from_user.id
     user_reporting.pop(uid, None)
     await msg.answer("Жалоба отменена. Продолжайте общение.", reply_markup=chat_menu)
 
+# --- Отправка жалобы ---
 @dp.message_handler(lambda m: m.from_user.id in user_reporting and m.text != "Отмена")
 async def report_reason(msg: types.Message):
     uid = msg.from_user.id
@@ -415,7 +425,7 @@ async def stop_cmd(msg: types.Message):
     if uid in waiting_tasks:
         waiting_tasks[uid].cancel()
         del waiting_tasks[uid]
-    partner = await break_pair(uid)
+    partner = await break_pair(uid)  # ← АВТООТМЕНА ЖАЛОБЫ
     if partner:
         await bot.send_message(partner, "Собеседник вышел.", reply_markup=main_menu)
     await msg.answer("Ты вышел.", reply_markup=main_menu)
@@ -515,7 +525,7 @@ async def user_info(msg: types.Message):
         uid = int(query)
     else:
         for u, c in user_codes.items():
-            if c == query.upper():  # ИСПРАВЛЕНО: == вместо np.equal
+            if c == query.upper():
                 uid = u
                 break
         if not uid and db_pool:
@@ -552,7 +562,7 @@ async def ban_user(msg: types.Message):
         uid = int(query)
     else:
         for u, c in user_codes.items():
-            if c == query.upper():  # ИСПРАВЛЕНО
+            if c == query.upper():
                 uid = u
                 break
         if not uid and db_pool:
@@ -581,7 +591,7 @@ async def unban_user(msg: types.Message):
         uid = int(query)
     else:
         for u, c in user_codes.items():
-            if c == query.upper():  # ИСПРАВЛЕНО
+            if c == query.upper():
                 uid = u
                 break
         if not uid and db_pool:
@@ -594,7 +604,7 @@ async def unban_user(msg: types.Message):
         async with db_pool.acquire() as conn:
             await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
     await bot.send_message(uid, "Вы разбанены.")
-    await clear_complaints(uid)  # ОБНУЛЯЕМ ЖАЛОБЫ
+    await clear_complaints(uid)
     await msg.answer("Разбанен. Жалобы обнулены.")
 
 # --- CALLBACK ---
@@ -627,7 +637,7 @@ async def mod_cb(call: types.CallbackQuery):
                 async with db_pool.acquire() as conn:
                     await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
             await bot.send_message(uid, "Вы разбанены.")
-            await clear_complaints(uid)  # ОБНУЛЯЕМ ЖАЛОБЫ
+            await clear_complaints(uid)
             await call.answer("Разбанен. Жалобы обнулены.")
     except Exception as e:
         log.error(f"Ошибка: {e}")
