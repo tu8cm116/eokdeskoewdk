@@ -57,17 +57,26 @@ async def init_db():
     try:
         db_pool = await asyncpg.create_pool(dsn=DATABASE_URL, min_size=1, max_size=5)
         async with db_pool.acquire() as conn:
+            # Создаём таблицы
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
-                    status VARCHAR(20) DEFAULT 'idle',
-                    banned BOOLEAN DEFAULT FALSE
+                    status VARCHAR(20) DEFAULT 'idle'
                 );
                 CREATE TABLE IF NOT EXISTS queue (user_id BIGINT PRIMARY KEY, joined_at TIMESTAMP DEFAULT NOW());
                 CREATE TABLE IF NOT EXISTS pairs (user_id BIGINT PRIMARY KEY, partner_id BIGINT);
                 CREATE INDEX IF NOT EXISTS idx_queue ON queue (joined_at);
             """)
-        log.info("PostgreSQL подключён")
+            # ДОБАВЛЯЕМ СТОЛБЕЦ banned, ЕСЛИ ЕГО НЕТ
+            try:
+                await conn.execute("ALTER TABLE users ADD COLUMN banned BOOLEAN DEFAULT FALSE")
+                log.info("Добавлен столбец 'banned' в таблицу users")
+            except asyncpg.DuplicateColumnError:
+                pass  # уже есть
+            except Exception as e:
+                log.warning(f"Не удалось добавить столбец banned: {e}")
+
+        log.info("PostgreSQL подключён и схема обновлена")
         return True
     except Exception as e:
         log.error(f"БД ошибка: {e}")
