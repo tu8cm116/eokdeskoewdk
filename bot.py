@@ -558,32 +558,123 @@ async def user_info(msg: types.Message):
 
     await msg.answer(response, parse_mode="HTML")
 
+# --- /ban ---
 @dp.message_handler(commands=['ban'])
 async def ban_user(msg: types.Message):
-    if msg.from_user.id != MODERATOR_ID: return
-    # ... (без изменений)
+    if msg.from_user.id != MODERATOR_ID:
+        return
+    text = msg.text.strip()
+    if len(text.split()) < 2:
+        return await msg.answer("Использование: /ban <id или код>")
+    query = text.split()[1]
+    uid = None
+    if query.isdigit():
+        uid = int(query)
+    else:
+        for u, c in user_codes.items():
+            if c == query.upper():
+                uid = u
+                break
+        if not uid and db_pool:
+            async with db_pool.acquire() as conn:
+                uid = await conn.fetchval("SELECT user_id FROM users WHERE code = $1", query.upper())
+    if not uid:
+        return await msg.answer("Не найден.")
+    memory_banned.add(uid)
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE users SET banned = TRUE WHERE user_id = $1", uid)
+    await break_pair(uid)
+    await bot.send_message(uid, "Вы забанены.")
+    await msg.answer("Забанен.")
 
+# --- /unban ---
 @dp.message_handler(commands=['unban'])
 async def unban_user(msg: types.Message):
-    if msg.from_user.id != MODERATOR_ID: return
-    # ... (без изменений)
+    if msg.from_user.id != MODERATOR_ID:
+        return
+    text = msg.text.strip()
+    if len(text.split()) < 2:
+        return await msg.answer("Использование: /unban <id или код>")
+    query = text.split()[1]
+    uid = None
+    if query.isdigit():
+        uid = int(query)
+    else:
+        for u, c in user_codes.items():
+            if c == query.upper():
+                uid = u
+                break
+        if not uid and db_pool:
+            async with db_pool.acquire() as conn:
+                uid = await conn.fetchval("SELECT user_id FROM users WHERE code = $1", query.upper())
+    if not uid:
+        return await msg.answer("Не найден.")
+    memory_banned.discard(uid)
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
+    await bot.send_message(uid, "Вы разбанены.")
+    await clear_complaints(uid)
+    await msg.answer("Разбанен. Жалобы обнулены.")
 
+# --- CALLBACK ---
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith(("ban_", "ign_", "unban_")))
 async def mod_cb(call: types.CallbackQuery):
-    # ... (без изменений)
+    if call.from_user.id != MODERATOR_ID:
+        return await call.answer("Нет доступа", show_alert=True)
+    d = call.data
+    try:
+        if d.startswith("ban_"):
+            uid = int(d.split("_")[1])
+            memory_banned.add(uid)
+            if db_pool:
+                async with db_pool.acquire() as conn:
+                    await conn.execute("UPDATE users SET banned = TRUE WHERE user_id = $1", uid)
+            await break_pair(uid)
+            await bot.send_message(uid, "Вы забанены.")
+            await call.answer("Забанен")
+        elif d.startswith("ign_"):
+            rid = int(d.split("_")[1])
+            for r in memory_reports:
+                if r['id'] == rid:
+                    r['ignored'] = True
+                    break
+            await call.answer("Жалоба скрыта (осталась в статистике)")
+        elif d.startswith("unban_"):
+            uid = int(d.split("_")[1])
+            memory_banned.discard(uid)
+            if db_pool:
+                async with db_pool.acquire() as conn:
+                    await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
+            await bot.send_message(uid, "Вы разбанены.")
+            await clear_complaints(uid)
+            await call.answer("Разбанен. Жалобы обнулены.")
+    except Exception as e:
+        log.error(f"Ошибка: {e}")
+        await call.answer("Ошибка")
 
+# --- ПЕРЕСЫЛКА ---
 @dp.message_handler(content_types=types.ContentTypes.ANY)
 async def relay(msg: types.Message):
     partner = await get_partner(msg.from_user.id)
-    if not partner: return
+    if not partner:
+        return
     try:
-        if msg.text: await bot.send_message(partner, msg.text)
-        elif msg.photo: await bot.send_photo(partner, msg.photo[-1].file_id, caption=msg.caption)
-        elif msg.sticker: await bot.send_sticker(partner, msg.sticker.file_id)
-        elif msg.voice: await bot.send_voice(partner, msg.voice.file_id)
-        elif msg.document: await bot.send_document(partner, msg.document.file_id)
-        elif msg.video: await bot.send_video(partner, msg.video.file_id)
-        else: await bot.send_message(partner, "Сообщение получено.")
+        if msg.text:
+            await bot.send_message(partner, msg.text)
+        elif msg.photo:
+            await bot.send_photo(partner, msg.photo[-1].file_id, caption=msg.caption)
+        elif msg.sticker:
+            await bot.send_sticker(partner, msg.sticker.file_id)
+        elif msg.voice:
+            await bot.send_voice(partner, msg.voice.file_id)
+        elif msg.document:
+            await bot.send_document(partner, msg.document.file_id)
+        elif msg.video:
+            await bot.send_video(partner, msg.video.file_id)
+        else:
+            await bot.send_message(partner, "Сообщение получено.")
     except Exception as e:
         log.error(f"Ошибка: {e}")
         await break_pair(msg.from_user.id)
@@ -598,3 +689,4 @@ async def on_startup(_):
 
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    
