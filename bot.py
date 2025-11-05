@@ -42,11 +42,11 @@ memory_banned = set()
 memory_reports = []
 all_complaints = {}
 user_codes = {}
-user_reporting = {}  # ← ДОБАВЛЕНО: отслеживание пользователей в процессе жалобы
+user_reporting = {}
 
 # ---------- КЛАВИАТУРЫ ----------
 main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
-main_menu.add(KeyboardButton("Найти"), KeyboardButton("Помощь"))
+main_menu.add(KeyboardButton("Найти собеседника"), KeyboardButton("Инфо"))
 main_menu.add(KeyboardButton("Мой код"))
 
 chat_menu = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -61,7 +61,7 @@ report_cancel_menu.add(KeyboardButton("Отменить жалобу"))
 
 mod_menu = ReplyKeyboardMarkup(resize_keyboard=True)
 mod_menu.add(KeyboardButton("Жалобы"), KeyboardButton("Статистика"))
-mod_menu.add(KeyboardButton("Баны"), KeyboardButton("Выход"))
+mod_menu.add(KeyboardButton("Баны"), KeyboardButton("Выйти"))
 
 # ---------- КОДЫ ----------
 def generate_code():
@@ -239,7 +239,7 @@ async def ban_user_auto(uid):
         async with db_pool.acquire() as conn:
             await conn.execute("UPDATE users SET banned = TRUE WHERE user_id = $1", uid)
     await break_pair(uid)
-    await bot.send_message(uid, "Вы забанены автоматически (5+ жалоб).")
+    await bot.send_message(uid, ":( Вы забанены за многочисленные жалобы. Получите инструкции по обжалованию по кнопке «Инфо»")
     if MODERATOR_ID:
         code = await get_user_code(uid) or "—"
         await bot.send_message(MODERATOR_ID, f"АВТОБАН: <code>{uid}</code> (<code>{code}</code>) — 5+ жалоб")
@@ -260,7 +260,7 @@ async def start(msg: types.Message):
     await break_pair(uid)
     await remove_from_queue(uid)
     memory_status[uid] = 'idle'
-    await msg.answer("Привет! Анонимный чат.", reply_markup=main_menu)
+    await msg.answer("Привет! Это ARMOR.\nАнонимный чат для общения от проекта Racers. Прежде, чем приступать к общению ознакомьтесь с информацией, нажав на кнопку «Инфо».\nВыберите действие ниже", reply_markup=main_menu)
 
 @dp.message_handler(commands=['mod'])
 async def mod_entry(msg: types.Message):
@@ -268,10 +268,10 @@ async def mod_entry(msg: types.Message):
         return await msg.answer("Доступ запрещён.")
     await msg.answer("Модераторская панель:", reply_markup=mod_menu)
 
-@dp.message_handler(lambda m: m.text == "Помощь")
+@dp.message_handler(lambda m: m.text == "Инфо")
 async def help_cmd(msg: types.Message):
     await msg.answer(
-        "• Найти — начать поиск\n"
+        "• Найти собеседника — начать поиск\n"
         "• Стоп — выйти\n"
         "• Следующий — найти нового\n"
         "• Пожаловаться — если плохо\n"
@@ -285,9 +285,9 @@ async def help_cmd(msg: types.Message):
 async def my_code_button(msg: types.Message):
     uid = msg.from_user.id
     code = await get_or_create_code(uid)
-    await msg.answer(f"Твой код: <code>{code}</code>", parse_mode="HTML", reply_markup=main_menu)
+    await msg.answer(f"Твой уникальный код: <code>{code}</code>", parse_mode="HTML", reply_markup=main_menu)
 
-@dp.message_handler(lambda m: m.text == "Найти")
+@dp.message_handler(lambda m: m.text == "Найти собеседника")
 async def search_button(msg: types.Message):
     if await get_partner(msg.from_user.id):
         return
@@ -319,7 +319,7 @@ async def report(msg: types.Message):
     partner = await get_partner(uid)
     if partner:
         user_reporting[uid] = partner
-        await msg.answer("Опиши проблему:", reply_markup=report_cancel_menu)
+        await msg.answer("Опишите причину жалобы:", reply_markup=report_cancel_menu)
     else:
         await msg.answer("Ты не в чате.", reply_markup=main_menu)
 
@@ -350,8 +350,8 @@ async def report_reason(msg: types.Message):
     all_complaints[partner] = all_complaints.get(partner, 0) + 1
     
     await break_pair(uid)
-    await msg.answer("Жалоба отправлена.", reply_markup=main_menu)
-    await bot.send_message(partner, "Чат завершён из-за жалобы.", reply_markup=main_menu)
+    await msg.answer("Жалоба отправлена и будет рассмотрена модерацией.", reply_markup=main_menu)
+    await bot.send_message(partner, ":( Диалог завершен из-за жалобы собеседника.", reply_markup=main_menu)
     
     count = all_complaints[partner]
     if MODERATOR_ID:
@@ -382,12 +382,12 @@ async def cancel_search(msg: types.Message, state: FSMContext):
 async def search(msg: types.Message):
     uid = msg.from_user.id
     if await is_banned(uid):
-        return await msg.answer("Вы забанены.", reply_markup=main_menu)
+        return await msg.answer("Вы были заблокированы. Попробуйте снова после снятия блокировки.", reply_markup=main_menu)
     if await get_partner(uid):
         return await msg.answer("Ты уже в чате.", reply_markup=chat_menu)
 
     await add_to_queue(uid)
-    await msg.answer("Ищем... (до 30 сек)", reply_markup=waiting_menu)
+    await msg.answer("Ищем собеседника.", reply_markup=waiting_menu)
 
     task = asyncio.create_task(wait_for_partner(uid))
     waiting_tasks[uid] = task
@@ -403,15 +403,15 @@ async def wait_for_partner(uid):
             partner = await find_partner(uid)
             if partner:
                 await create_pair(uid, partner)
-                await bot.send_message(uid, "Собеседник найден! Пиши.", reply_markup=chat_menu)
-                await bot.send_message(partner, "Собеседник найден! Пиши.", reply_markup=chat_menu)
+                await bot.send_message(uid, "Собеседник найден! Соблюдайте правила.", reply_markup=chat_menu)
+                await bot.send_message(partner, "Собеседник найден! Соблюдайте правила.", reply_markup=chat_menu)
                 if uid in waiting_tasks:
                     del waiting_tasks[uid]
                 return
         await remove_from_queue(uid)
         if uid in waiting_tasks:
             del waiting_tasks[uid]
-        await bot.send_message(uid, "Не нашли. Попробуй позже.", reply_markup=main_menu)
+        await bot.send_message(uid, ":( К сожалению, нет свободных или активных пользователей. Попробуй позже.", reply_markup=main_menu)
     except asyncio.CancelledError:
         pass
 
@@ -432,8 +432,8 @@ async def stop_cmd(msg: types.Message):
         del waiting_tasks[uid]
     partner = await break_pair(uid)
     if partner:
-        await bot.send_message(partner, "Собеседник вышел.", reply_markup=main_menu)
-    await msg.answer("Ты вышел.", reply_markup=main_menu)
+        await bot.send_message(partner, ":( Собеседник завершил чат.", reply_markup=main_menu)
+    await msg.answer("Диалог завершен.", reply_markup=main_menu)
 
 @dp.message_handler(commands=['next'])
 async def next_cmd(msg: types.Message):
@@ -456,7 +456,7 @@ async def bans_button(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID: return
     await show_bans(msg)
 
-@dp.message_handler(lambda m: m.text == "Выход")
+@dp.message_handler(lambda m: m.text == "Выйти")
 async def exit_button(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID: return
     await msg.answer("Выход в главное меню.", reply_markup=main_menu)
@@ -466,7 +466,7 @@ async def show_reports(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID: return
     active = [r for r in memory_reports if not r.get('ignored', False)]
     if not active:
-        return await msg.answer("Нет активных жалоб.", reply_markup=mod_menu)
+        return await msg.answer("Нет жалоб.", reply_markup=mod_menu)
     for r in active:
         from_code = await get_user_code(r['from']) or "—"
         to_code = await get_user_code(r['to']) or "—"
@@ -494,13 +494,7 @@ async def stats(msg: types.Message):
     users_with_complaints = len(all_complaints)
 
     await msg.answer(
-        f"<b>Статистика</b>\n"
-        f"Пользователей: {total_users}\n"
-        f"В чате: {chatting}\n"
-        f"В поиске: {searching}\n"
-        f"Забанено: {banned}\n"
-        f"Всего жалоб: {total_complaints}\n"
-        f"Пожаловались на: {users_with_complaints} чел.",
+        f"Статистика:\nПользователей: {total_users}\nВ чате: {chatting}\nВ поиске: {searching}\nЗабанено: {banned}",
         parse_mode="HTML",
         reply_markup=mod_menu
     )
@@ -547,12 +541,12 @@ async def user_info(msg: types.Message):
     user_reports = [r for r in memory_reports if r['to'] == uid]
 
     response = (
-        f"<b>Пользователь</b>\n"
+        f"Пользователь\n"
         f"ID: <code>{uid}</code>\n"
         f"Код: <code>{code}</code>\n"
         f"Статус: {status}\n"
         f"Забанен: {banned}\n"
-        f"Всего жалоб: {total_complaints}\n\n"
+        f"Жалоб: {total_complaints}\n\n"
     )
 
     if user_reports:
@@ -596,7 +590,7 @@ async def ban_user(msg: types.Message):
         async with db_pool.acquire() as conn:
             await conn.execute("UPDATE users SET banned = TRUE WHERE user_id = $1", uid)
     await break_pair(uid)
-    await bot.send_message(uid, "Вы забанены.")
+    await bot.send_message(uid, "Вы были заблокированы модерацией. Получите инструкции по обжалованию по кнопке «Инфо»")
     await msg.answer("Забанен.")
 
 # --- /unban ---
@@ -625,7 +619,7 @@ async def unban_user(msg: types.Message):
     if db_pool:
         async with db_pool.acquire() as conn:
             await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
-    await bot.send_message(uid, "Вы разбанены.")
+    await bot.send_message(uid, ":) Поздравляем, вы были разблокированы модераций. Ваши жалобы обнулены. Впредь, соблюдайте правила. Приятного общения.")
     await clear_complaints(uid)
     await msg.answer("Разбанен. Жалобы обнулены.")
 
@@ -643,7 +637,7 @@ async def mod_cb(call: types.CallbackQuery):
                 async with db_pool.acquire() as conn:
                     await conn.execute("UPDATE users SET banned = TRUE WHERE user_id = $1", uid)
             await break_pair(uid)
-            await bot.send_message(uid, "Вы забанены.")
+            await bot.send_message(uid, "Вы были заблокированы модерацией. Получите инструкции по обжалованию по кнопке «Инфо»")
             await call.answer("Забанен")
         elif d.startswith("ign_"):
             rid = int(d.split("_")[1])
@@ -658,7 +652,7 @@ async def mod_cb(call: types.CallbackQuery):
             if db_pool:
                 async with db_pool.acquire() as conn:
                     await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
-            await bot.send_message(uid, "Вы разбанены.")
+            await bot.send_message(uid, ":) Поздравляем, вы были разблокированы модераций. Ваши жалобы обнулены. Впредь, соблюдайте правила. Приятного общения.")
             await clear_complaints(uid)
             await call.answer("Разбанен. Жалобы обнулены.")
     except Exception as e:
@@ -689,7 +683,7 @@ async def relay(msg: types.Message):
         elif msg.video:
             await bot.send_video(partner, msg.video.file_id)
         else:
-            await bot.send_message(partner, "Сообщение получено.")
+            await bot.send_message(partner, "Данный тип сообщения не поддерживается.")
     except Exception as e:
         log.error(f"Ошибка: {e}")
         await break_pair(msg.from_user.id)
