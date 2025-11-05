@@ -66,7 +66,6 @@ async def init_db():
                 CREATE TABLE IF NOT EXISTS pairs (user_id BIGINT PRIMARY KEY, partner_id BIGINT);
                 CREATE INDEX IF NOT EXISTS idx_queue ON queue (joined_at);
             """)
-            # Добавляем banned, если нет
             try:
                 await conn.execute("ALTER TABLE users ADD COLUMN banned BOOLEAN DEFAULT FALSE")
                 log.info("Добавлен столбец 'banned'")
@@ -159,6 +158,7 @@ async def is_banned(uid):
 waiting_tasks = {}
 user_reporting = {}
 
+# --- МОДЕРАТОРСКИЕ (ПЕРВЫМИ!) ---
 @dp.message_handler(commands=['mod'])
 async def mod_entry(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID:
@@ -169,6 +169,7 @@ async def mod_entry(msg: types.Message):
 async def get_id(msg: types.Message):
     await msg.answer(f"Твой ID: <code>{msg.from_user.id}</code>", parse_mode="HTML")
 
+# --- ОСНОВНЫЕ ---
 @dp.message_handler(commands=['start'])
 async def start(msg: types.Message):
     uid = msg.from_user.id
@@ -177,7 +178,7 @@ async def start(msg: types.Message):
     await remove_from_queue(uid)
     await msg.answer("Привет! Анонимный чат.", reply_markup=main_menu)
 
-@dp.message_handler(commands=['help'])
+@dp.message_handler(lambda m: m.text == "Помощь")
 async def help_cmd(msg: types.Message):
     await msg.answer(
         "• Найти — начать поиск\n"
@@ -188,6 +189,43 @@ async def help_cmd(msg: types.Message):
         reply_markup=main_menu
     )
 
+# --- КНОПКИ (текст кнопок) ---
+@dp.message_handler(lambda m: m.text == "Найти")
+async def search_button(msg: types.Message):
+    uid = msg.from_user.id
+    if await get_partner(uid):
+        return  # Игнорируем, если в чате
+    await search(msg)  # Вызываем логику поиска
+
+@dp.message_handler(lambda m: m.text == "Отмена")
+async def cancel_button(msg: types.Message):
+    uid = msg.from_user.id
+    if await get_partner(uid):
+        return
+    await cancel(msg)
+
+@dp.message_handler(lambda m: m.text == "Стоп")
+async def stop_button(msg: types.Message):
+    uid = msg.from_user.id
+    if not await get_partner(uid):
+        return
+    await stop_cmd(msg)
+
+@dp.message_handler(lambda m: m.text == "Следующий")
+async def next_button(msg: types.Message):
+    uid = msg.from_user.id
+    if not await get_partner(uid):
+        return
+    await next_cmd(msg)
+
+@dp.message_handler(lambda m: m.text == "Пожаловаться")
+async def report_button(msg: types.Message):
+    uid = msg.from_user.id
+    if not await get_partner(uid):
+        return
+    await report(msg)
+
+# --- КОМАНДЫ (для ручного ввода) ---
 @dp.message_handler(commands=['search'])
 async def search(msg: types.Message):
     uid = msg.from_user.id
@@ -203,20 +241,27 @@ async def search(msg: types.Message):
     waiting_tasks[uid] = task
 
 async def wait_for_partner(uid):
-    for _ in range(30):
-        await asyncio.sleep(1)
-        partner = await find_partner(uid)
-        if partner:
-            await create_pair(uid, partner)
-            await bot.send_message(uid, "Собеседник найден! Пиши.", reply_markup=chat_menu)
-            await bot.send_message(partner, "Собеседник найден! Пиши.", reply_markup=chat_menu)
-            if uid in waiting_tasks:
-                del waiting_tasks[uid]
-            return
-    await remove_from_queue(uid)
-    await bot.send_message(uid, "Не нашли. Попробуй позже.", reply_markup=main_menu)
-    if uid in waiting_tasks:
-        del waiting_tasks[uid]
+    try:
+        for _ in range(30):
+            await asyncio.sleep(1)
+            if await get_partner(uid):
+                if uid in waiting_tasks:
+                    del waiting_tasks[uid]
+                return
+            partner = await find_partner(uid)
+            if partner:
+                await create_pair(uid, partner)
+                await bot.send_message(uid, "Собеседник найден! Пиши.", reply_markup=chat_menu)
+                await bot.send_message(partner, "Собеседник найден! Пиши.", reply_markup=chat_menu)
+                if uid in waiting_tasks:
+                    del waiting_tasks[uid]
+                return
+        await remove_from_queue(uid)
+        if uid in waiting_tasks:
+            del waiting_tasks[uid]
+        await bot.send_message(uid, "Не нашли. Попробуй позже.", reply_markup=main_menu)
+    except asyncio.CancelledError:
+        pass
 
 @dp.message_handler(commands=['cancel'])
 async def cancel(msg: types.Message):
@@ -266,6 +311,27 @@ async def report_reason(msg: types.Message):
     if MODERATOR_ID:
         await bot.send_message(MODERATOR_ID, f"ЖАЛОБА!\nОт: {uid}\nНа: {partner}\nПричина: {reason}\n/mod")
 
+# --- МОДЕРАТОРСКИЕ КНОПКИ ---
+@dp.message_handler(lambda m: m.text == "Жалобы")
+async def complaints_button(msg: types.Message):
+    if msg.from_user.id != MODERATOR_ID: return
+    await show_reports(msg)
+
+@dp.message_handler(lambda m: m.text == "Статистика")
+async def stats_button(msg: types.Message):
+    if msg.from_user.id != MODERATOR_ID: return
+    await stats(msg)
+
+@dp.message_handler(lambda m: m.text == "Баны")
+async def bans_button(msg: types.Message):
+    if msg.from_user.id != MODERATOR_ID: return
+    await show_bans(msg)
+
+@dp.message_handler(lambda m: m.text == "Выход")
+async def exit_button(msg: types.Message):
+    if msg.from_user.id != MODERATOR_ID: return
+    await msg.answer("Выход.", reply_markup=ReplyKeyboardRemove())
+
 # --- МОДЕРАТОРСКИЕ КОМАНДЫ ---
 @dp.message_handler(commands=['complaints'])
 async def show_reports(msg: types.Message):
@@ -309,11 +375,6 @@ async def show_bans(msg: types.Message):
     for uid in memory_banned:
         kb.add(InlineKeyboardButton(f"Разбанить {uid}", callback_data=f"unban_{uid}"))
     await msg.answer("Забаненные:", reply_markup=kb)
-
-@dp.message_handler(commands=['exit'])
-async def mod_exit(msg: types.Message):
-    if msg.from_user.id != MODERATOR_ID: return
-    await msg.answer("Выход.", reply_markup=ReplyKeyboardRemove())
 
 # --- CALLBACK ---
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith(("ban_", "ign_", "unban_")))
