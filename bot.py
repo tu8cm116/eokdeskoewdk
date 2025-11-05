@@ -251,7 +251,7 @@ async def help_cmd(msg: types.Message):
         reply_markup=main_menu
     )
 
-# --- КНОПКИ (ВСЕ РАБОТАЮТ!) ---
+# --- КНОПКИ ---
 @dp.message_handler(lambda m: m.text == "Мой код")
 async def my_code_button(msg: types.Message):
     uid = msg.from_user.id
@@ -361,6 +361,7 @@ async def report(msg: types.Message):
     else:
         await msg.answer("Ты не в чате.", reply_markup=main_menu)
 
+# --- ЖАЛОБА (с причиной завершения и кодами) ---
 @dp.message_handler(lambda m: m.from_user.id in user_reporting)
 async def report_reason(msg: types.Message):
     uid = msg.from_user.id
@@ -374,7 +375,7 @@ async def report_reason(msg: types.Message):
     memory_reports.append({"id": report_id, "from": uid, "to": partner, "reason": reason})
     await break_pair(uid)
     await msg.answer("Жалоба отправлена.", reply_markup=main_menu)
-    await bot.send_message(partner, "Чат завершён.", reply_markup=main_menu)
+    await bot.send_message(partner, "Чат завершён из-за жалобы.", reply_markup=main_menu)  # ← ФИКС
 
     count = await increment_complaints(partner)
 
@@ -418,15 +419,18 @@ async def show_reports(msg: types.Message):
     if not memory_reports:
         return await msg.answer("Нет жалоб.", reply_markup=mod_menu)
     for r in memory_reports:
+        from_code = await get_user_code(r['from']) or "—"
+        to_code = await get_user_code(r['to']) or "—"
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("Забанить", callback_data=f"ban_{r['to']}"))
         kb.add(InlineKeyboardButton("Игнор", callback_data=f"ign_{r['id']}"))
         await msg.answer(
             f"<b>Жалоба #{r['id']}</b>\n"
-            f"От: {r['from']}\n"
-            f"На: {r['to']}\n"
+            f"От: <code>{r['from']}</code> (<code>{from_code}</code>)\n"
+            f"На: <code>{r['to']}</code> (<code>{to_code}</code>)\n"
             f"Причина: {r['reason']}",
-            reply_markup=kb
+            reply_markup=kb,
+            parse_mode="HTML"
         )
 
 @dp.message_handler(commands=['stats'])
