@@ -5,7 +5,10 @@ from collections import deque
 import asyncpg
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
-from aiogram.types import ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 
 # ---------- Логирование ----------
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
@@ -14,7 +17,7 @@ log = logging.getLogger(__name__)
 # ---------- Конфигурация ----------
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-MODERATOR_ID = int(os.getenv("MODERATOR_ID", "0"))  # ТВОЙ ID: 684261784
+MODERATOR_ID = int(os.getenv("MODERATOR_ID", "0"))
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN не задан!")
@@ -30,7 +33,22 @@ memory_status = {}
 memory_banned = set()
 memory_reports = []
 
-# ---------- БД (опционально) ----------
+# ---------- КЛАВИАТУРЫ ----------
+main_menu = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
+main_menu.add(KeyboardButton("/search"), KeyboardButton("/help"))
+
+chat_menu = ReplyKeyboardMarkup(resize_keyboard=True)
+chat_menu.add(KeyboardButton("/stop"), KeyboardButton("/next"))
+chat_menu.add(KeyboardButton("/report"))
+
+waiting_menu = ReplyKeyboardMarkup(resize_keyboard=True)
+waiting_menu.add(KeyboardButton("/cancel"))
+
+mod_menu = ReplyKeyboardMarkup(resize_keyboard=True)
+mod_menu.add(KeyboardButton("/complaints"), KeyboardButton("/stats"))
+mod_menu.add(KeyboardButton("/bans"), KeyboardButton("/exit"))
+
+# ---------- БД ----------
 async def init_db():
     global db_pool
     if not DATABASE_URL:
@@ -134,52 +152,49 @@ async def is_banned(uid):
 waiting_tasks = {}
 user_reporting = {}
 
-# --- МОДЕРАТОРСКИЕ КОМАНДЫ (ПЕРВЫМИ!) ---
+# --- МОДЕРАТОРСКИЕ (ПЕРВЫМИ!) ---
 @dp.message_handler(commands=['mod'])
 async def mod_entry(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID:
         return await msg.answer("Доступ запрещён.")
-    await msg.answer(
-        "<b>Модераторская панель:</b>\n"
-        "/complaints — жалобы\n"
-        "/stats — статистика\n"
-        "/bans — баны\n"
-        "/exit — выход",
-        parse_mode="HTML"
-    )
+    await msg.answer("Модераторская панель:", reply_markup=mod_menu)
 
 @dp.message_handler(commands=['id'])
 async def get_id(msg: types.Message):
     await msg.answer(f"Твой ID: <code>{msg.from_user.id}</code>", parse_mode="HTML")
 
-# --- ОСНОВНЫЕ КОМАНДЫ ---
+# --- ОСНОВНЫЕ ---
 @dp.message_handler(commands=['start'])
 async def start(msg: types.Message):
     uid = msg.from_user.id
     await ensure_user(uid)
     await break_pair(uid)
     await remove_from_queue(uid)
+    await msg.answer("Привет! Анонимный чат.", reply_markup=main_menu)
+
+@dp.message_handler(commands=['help'])
+async def help_cmd(msg: types.Message):
     await msg.answer(
-        "<b>Анонимный чат</b>\n\n"
         "<b>Команды:</b>\n"
-        "/search — найти собеседника\n"
+        "/search — найти\n"
         "/stop — выйти\n"
         "/next — следующий\n"
         "/report — пожаловаться\n"
-        "/cancel — отмена поиска",
-        parse_mode="HTML"
+        "/cancel — отмена",
+        parse_mode="HTML",
+        reply_markup=main_menu
     )
 
 @dp.message_handler(commands=['search'])
 async def search(msg: types.Message):
     uid = msg.from_user.id
     if await is_banned(uid):
-        return await msg.answer("Вы забанены.")
+        return await msg.answer("Вы забанены.", reply_markup=main_menu)
     if await get_partner(uid):
-        return await msg.answer("Ты уже в чате. Используй /stop")
+        return await msg.answer("Ты уже в чате.", reply_markup=chat_menu)
 
     await add_to_queue(uid)
-    await msg.answer("Ищем собеседника... (до 30 сек)\n/cancel — отменить")
+    await msg.answer("Ищем... (до 30 сек)", reply_markup=waiting_menu)
 
     task = asyncio.create_task(wait_for_partner(uid))
     waiting_tasks[uid] = task
@@ -190,13 +205,13 @@ async def wait_for_partner(uid):
         partner = await find_partner(uid)
         if partner:
             await create_pair(uid, partner)
-            await bot.send_message(uid, "Собеседник найден! Пиши.", parse_mode="HTML")
-            await bot.send_message(partner, "Собеседник найден! Пиши.", parse_mode="HTML")
+            await bot.send_message(uid, "Собеседник найден! Пиши.", reply_markup=chat_menu)
+            await bot.send_message(partner, "Собеседник найден! Пиши.", reply_markup=chat_menu)
             if uid in waiting_tasks:
                 del waiting_tasks[uid]
             return
     await remove_from_queue(uid)
-    await bot.send_message(uid, "Не нашли. Попробуй позже.")
+    await bot.send_message(uid, "Не нашли. Попробуй позже.", reply_markup=main_menu)
     if uid in waiting_tasks:
         del waiting_tasks[uid]
 
@@ -207,7 +222,7 @@ async def cancel(msg: types.Message):
         waiting_tasks[uid].cancel()
         del waiting_tasks[uid]
     await remove_from_queue(uid)
-    await msg.answer("Поиск отменён.")
+    await msg.answer("Поиск отменён.", reply_markup=main_menu)
 
 @dp.message_handler(commands=['stop'])
 async def stop_cmd(msg: types.Message):
@@ -217,8 +232,8 @@ async def stop_cmd(msg: types.Message):
         del waiting_tasks[uid]
     partner = await break_pair(uid)
     if partner:
-        await bot.send_message(partner, "Собеседник вышел.")
-    await msg.answer("Ты вышел из чата.")
+        await bot.send_message(partner, "Собеседник вышел.", reply_markup=main_menu)
+    await msg.answer("Ты вышел.", reply_markup=main_menu)
 
 @dp.message_handler(commands=['next'])
 async def next_cmd(msg: types.Message):
@@ -231,9 +246,9 @@ async def report(msg: types.Message):
     partner = await get_partner(uid)
     if partner:
         user_reporting[uid] = partner
-        await msg.answer("Опиши проблему (текстом):", reply_markup=ReplyKeyboardRemove())
+        await msg.answer("Опиши проблему:", reply_markup=ReplyKeyboardRemove())
     else:
-        await msg.answer("Ты не в чате.")
+        await msg.answer("Ты не в чате.", reply_markup=main_menu)
 
 @dp.message_handler(lambda m: m.from_user.id in user_reporting)
 async def report_reason(msg: types.Message):
@@ -243,29 +258,27 @@ async def report_reason(msg: types.Message):
     report_id = len(memory_reports) + 1
     memory_reports.append({"id": report_id, "from": uid, "to": partner, "reason": reason})
     await break_pair(uid)
-    await msg.answer("Жалоба отправлена.")
-    await bot.send_message(partner, "Чат завершён из-за жалобы.")
+    await msg.answer("Жалоба отправлена.", reply_markup=main_menu)
+    await bot.send_message(partner, "Чат завершён.", reply_markup=main_menu)
     if MODERATOR_ID:
-        await bot.send_message(MODERATOR_ID, f"НОВАЯ ЖАЛОБА!\nОт: {uid}\nНа: {partner}\nПричина: {reason}\n/mod")
+        await bot.send_message(MODERATOR_ID, f"ЖАЛОБА!\nОт: {uid}\nНа: {partner}\nПричина: {reason}\n/mod")
 
-# --- МОДЕРАТОРСКИЕ ПАНЕЛИ ---
+# --- МОДЕРАТОРСКИЕ ---
 @dp.message_handler(commands=['complaints'])
 async def show_reports(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID: return
     if not memory_reports:
-        return await msg.answer("Нет жалоб.")
+        return await msg.answer("Нет жалоб.", reply_markup=mod_menu)
     for r in memory_reports:
-        kb = InlineKeyboardMarkup(row_width=1)
-        # УДАЛЕНА КНОПКА "Удалить чат"
+        kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("Забанить", callback_data=f"ban_{r['to']}"))
         kb.add(InlineKeyboardButton("Игнор", callback_data=f"ign_{r['id']}"))
         await msg.answer(
             f"<b>Жалоба #{r['id']}</b>\n"
-            f"От: <a href='tg://user?id={r['from']}'>{r['from']}</a>\n"
-            f"На: <a href='tg://user?id={r['to']}'>{r['to']}</a>\n"
+            f"От: {r['from']}\n"
+            f"На: {r['to']}\n"
             f"Причина: {r['reason']}",
-            reply_markup=kb,
-            parse_mode="HTML"
+            reply_markup=kb
         )
 
 @dp.message_handler(commands=['stats'])
@@ -276,20 +289,20 @@ async def stats(msg: types.Message):
     queue = len(memory_queue)
     banned = len(memory_banned)
     await msg.answer(
-        f"<b>Статистика</b>\n"
+        f"Статистика:\n"
         f"Пользователей: {total}\n"
         f"В чате: {chatting}\n"
         f"В поиске: {queue}\n"
         f"Забанено: {banned}",
-        parse_mode="HTML"
+        reply_markup=mod_menu
     )
 
 @dp.message_handler(commands=['bans'])
 async def show_bans(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID: return
     if not memory_banned:
-        return await msg.answer("Нет забаненных.")
-    kb = InlineKeyboardMarkup(row_width=1)
+        return await msg.answer("Нет забаненных.", reply_markup=mod_menu)
+    kb = InlineKeyboardMarkup()
     for uid in memory_banned:
         kb.add(InlineKeyboardButton(f"Разбанить {uid}", callback_data=f"unban_{uid}"))
     await msg.answer("Забаненные:", reply_markup=kb)
@@ -297,7 +310,7 @@ async def show_bans(msg: types.Message):
 @dp.message_handler(commands=['exit'])
 async def mod_exit(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID: return
-    await msg.answer("Выход из мод-панели.")
+    await msg.answer("Выход.", reply_markup=ReplyKeyboardRemove())
 
 # --- CALLBACK ---
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith(("ban_", "ign_", "unban_")))
@@ -323,10 +336,10 @@ async def mod_cb(call: types.CallbackQuery):
             await bot.send_message(uid, "Вы разбанены.")
             await call.answer("Разбанен")
     except Exception as e:
-        log.error(f"Мод ошибка: {e}")
+        log.error(f"Ошибка: {e}")
         await call.answer("Ошибка")
 
-# --- ПЕРЕСЫЛКА ---
+# --- ПЕРЕСЫЛКА (в самом конце!) ---
 @dp.message_handler(content_types=types.ContentTypes.ANY)
 async def relay(msg: types.Message):
     partner = await get_partner(msg.from_user.id)
@@ -340,9 +353,9 @@ async def relay(msg: types.Message):
         elif msg.video: await bot.send_video(partner, msg.video.file_id)
         else: await bot.send_message(partner, "Сообщение получено.")
     except Exception as e:
-        log.error(f"Ошибка пересылки: {e}")
+        log.error(f"Ошибка: {e}")
         await break_pair(msg.from_user.id)
-        await msg.answer("Ошибка. Чат прерван.")
+        await msg.answer("Ошибка. Чат прерван.", reply_markup=main_menu)
 
 # ---------- Запуск ----------
 async def on_startup(_):
