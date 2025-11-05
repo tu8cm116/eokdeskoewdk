@@ -56,13 +56,30 @@ mod_menu.add(KeyboardButton("Баны"), KeyboardButton("Выход"))
 def generate_code():
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
-async def get_or_create_code(uid):
+async def get_user_code(uid):
+    """Получить существующий код (не создавать новый)"""
     if uid in user_codes:
         return user_codes[uid]
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            code = await conn.fetchval("SELECT code FROM users WHERE user_id = $1", uid)
+            if code:
+                user_codes[uid] = code
+                return code
+    return None
+
+async def get_or_create_code(uid):
+    """Создать код, если его нет"""
+    code = await get_user_code(uid)
+    if code:
+        return code
     code = generate_code()
     while any(code == c for c in user_codes.values()):
         code = generate_code()
     user_codes[uid] = code
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE users SET code = $1 WHERE user_id = $2", code, uid)
     return code
 
 # ---------- БД (БЕЗОПАСНАЯ) ----------
@@ -404,7 +421,7 @@ async def show_bans(msg: types.Message):
         kb.add(InlineKeyboardButton(f"Разбанить {uid}", callback_data=f"unban_{uid}"))
     await msg.answer("Забаненные:", reply_markup=kb)
 
-# --- НОВЫЕ КОМАНДЫ: /user, /ban, /unban ---
+# --- НОВЫЕ КОМАНДЫ: /user, /ban, /unban (ФИКС) ---
 @dp.message_handler(commands=['user'])
 async def user_info(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID:
@@ -431,7 +448,7 @@ async def user_info(msg: types.Message):
 
     status = "в чате" if await get_partner(uid) else "не в чате"
     banned = "да" if await is_banned(uid) else "нет"
-    code = await get_or_create_code(uid)
+    code = await get_user_code(uid) or "Нет кода"
     await msg.answer(
         f"<b>Пользователь</b>\n"
         f"ID: <code>{uid}</code>\n"
@@ -463,6 +480,9 @@ async def ban_user(msg: types.Message):
     if not uid:
         return await msg.answer("Не найден.")
     memory_banned.add(uid)
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE users SET banned = TRUE WHERE user_id = $1", uid)
     await break_pair(uid)
     await bot.send_message(uid, "Вы забанены.")
     await msg.answer("Забанен.")
@@ -489,6 +509,9 @@ async def unban_user(msg: types.Message):
     if not uid:
         return await msg.answer("Не найден.")
     memory_banned.discard(uid)
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
     await bot.send_message(uid, "Вы разбанены.")
     await msg.answer("Разбанен.")
 
@@ -502,6 +525,9 @@ async def mod_cb(call: types.CallbackQuery):
         if d.startswith("ban_"):
             uid = int(d.split("_")[1])
             memory_banned.add(uid)
+            if db_pool:
+                async with db_pool.acquire() as conn:
+                    await conn.execute("UPDATE users SET banned = TRUE WHERE user_id = $1", uid)
             await break_pair(uid)
             await bot.send_message(uid, "Вы забанены.")
             await call.answer("Забанен")
@@ -513,6 +539,9 @@ async def mod_cb(call: types.CallbackQuery):
         elif d.startswith("unban_"):
             uid = int(d.split("_")[1])
             memory_banned.discard(uid)
+            if db_pool:
+                async with db_pool.acquire() as conn:
+                    await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
             await bot.send_message(uid, "Вы разбанены.")
             await call.answer("Разбанен")
     except Exception as e:
