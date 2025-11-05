@@ -374,17 +374,28 @@ async def next_cmd(msg: types.Message):
     await stop_cmd(msg)
     await search(msg)
 
+# --- Пожаловаться (с кнопкой Отмена) ---
 @dp.message_handler(commands=['report'])
 async def report(msg: types.Message):
     uid = msg.from_user.id
     partner = await get_partner(uid)
     if partner:
         user_reporting[uid] = partner
-        await msg.answer("Опиши проблему:", reply_markup=ReplyKeyboardRemove())
+        cancel_kb = ReplyKeyboardMarkup(resize_keyboard=True)
+        cancel_kb.add(KeyboardButton("Отмена"))
+        await msg.answer("Опиши проблему:", reply_markup=cancel_kb)
     else:
         await msg.answer("Ты не в чате.", reply_markup=main_menu)
 
-@dp.message_handler(lambda m: m.from_user.id in user_reporting)
+# --- Обработка "Отмена" при жалобе ---
+@dp.message_handler(lambda m: m.text == "Отмена" and m.from_user.id in user_reporting)
+async def cancel_report(msg: types.Message):
+    uid = msg.from_user.id
+    user_reporting.pop(uid, None)
+    await msg.answer("Жалоба отменена.", reply_markup=chat_menu)
+
+# --- Жалоба (осталось без изменений, но после "Отмена" не сработает) ---
+@dp.message_handler(lambda m: m.from_user.id in user_reporting and m.text != "Отмена")
 async def report_reason(msg: types.Message):
     uid = msg.from_user.id
     partner = user_reporting.pop(uid)
