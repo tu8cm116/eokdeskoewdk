@@ -225,6 +225,33 @@ async def is_banned(uid):
     else:
         return uid in memory_banned
 
+# ---------- БЛОКИРОВКА ПОЛЬЗОВАТЕЛЯ ----------
+async def ban_user_complete(uid):
+    """Полная блокировка пользователя с завершением всех активностей"""
+    memory_banned.add(uid)
+    
+    # Завершаем поиск если был в очереди
+    if uid in waiting_tasks:
+        waiting_tasks[uid].cancel()
+        del waiting_tasks[uid]
+    
+    await remove_from_queue(uid)
+    
+    # Завершаем чат если был в паре
+    partner = await break_pair(uid)
+    if partner:
+        await bot.send_message(partner, ":( Собеседник завершил чат.", reply_markup=main_menu)
+    
+    # Отправляем сообщение о блокировке
+    await bot.send_message(uid, "Вы были заблокированы модерацией. Получите инструкции по обжалованию по кнопке «Инфо»", reply_markup=main_menu)
+    
+    # Обновляем статус в БД
+    if db_pool:
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE users SET banned = TRUE WHERE user_id = $1", uid)
+    
+    log.info(f"Пользователь {uid} забанен, все активности завершены")
+
 # ---------- АВТОБАН ----------
 async def increment_complaints(uid):
     all_complaints[uid] = all_complaints.get(uid, 0) + 1
@@ -234,15 +261,34 @@ async def increment_complaints(uid):
     return count
 
 async def ban_user_auto(uid):
+    """Автоматическая блокировка за многочисленные жалобы"""
     memory_banned.add(uid)
+    
+    # Завершаем поиск если был в очереди
+    if uid in waiting_tasks:
+        waiting_tasks[uid].cancel()
+        del waiting_tasks[uid]
+    
+    await remove_from_queue(uid)
+    
+    # Завершаем чат если был в паре
+    partner = await break_pair(uid)
+    if partner:
+        await bot.send_message(partner, ":( Собеседник завершил чат.", reply_markup=main_menu)
+    
+    # Отправляем сообщение об автобане
+    await bot.send_message(uid, ":( Вы забанены за многочисленные жалобы. Получите инструкции по обжалованию по кнопке «Инфо»", reply_markup=main_menu)
+    
+    # Обновляем статус в БД
     if db_pool:
         async with db_pool.acquire() as conn:
             await conn.execute("UPDATE users SET banned = TRUE WHERE user_id = $1", uid)
-    await break_pair(uid)
-    await bot.send_message(uid, ":( Вы забанены за многочисленные жалобы. Получите инструкции по обжалованию по кнопке «Инфо»")
+    
     if MODERATOR_ID:
         code = await get_user_code(uid) or "—"
         await bot.send_message(MODERATOR_ID, f"АВТОБАН: <code>{uid}</code> (<code>{code}</code>) — 5+ жалоб")
+    
+    log.info(f"Автобан пользователя {uid} за 5+ жалоб")
 
 async def clear_complaints(uid):
     all_complaints.pop(uid, None)
@@ -585,12 +631,8 @@ async def ban_user(msg: types.Message):
                 uid = await conn.fetchval("SELECT user_id FROM users WHERE code = $1", query.upper())
     if not uid:
         return await msg.answer("Не найден.")
-    memory_banned.add(uid)
-    if db_pool:
-        async with db_pool.acquire() as conn:
-            await conn.execute("UPDATE users SET banned = TRUE WHERE user_id = $1", uid)
-    await break_pair(uid)
-    await bot.send_message(uid, "Вы были заблокированы модерацией. Получите инструкции по обжалованию по кнопке «Инфо»")
+    
+    await ban_user_complete(uid)
     await msg.answer("Забанен.")
 
 # --- /unban ---
@@ -619,7 +661,7 @@ async def unban_user(msg: types.Message):
     if db_pool:
         async with db_pool.acquire() as conn:
             await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
-    await bot.send_message(uid, ":) Поздравляем, вы были разблокированы модераций. Ваши жалобы обнулены. Впредь, соблюдайте правила. Приятного общения.")
+    await bot.send_message(uid, ":) Поздравляем, вы были разблокированы модерацией. Ваши жалобы обнулены. Впредь, соблюдайте правила. Приятного общения.", reply_markup=main_menu)
     await clear_complaints(uid)
     await msg.answer("Разбанен. Жалобы обнулены.")
 
@@ -632,12 +674,7 @@ async def mod_cb(call: types.CallbackQuery):
     try:
         if d.startswith("ban_"):
             uid = int(d.split("_")[1])
-            memory_banned.add(uid)
-            if db_pool:
-                async with db_pool.acquire() as conn:
-                    await conn.execute("UPDATE users SET banned = TRUE WHERE user_id = $1", uid)
-            await break_pair(uid)
-            await bot.send_message(uid, "Вы были заблокированы модерацией. Получите инструкции по обжалованию по кнопке «Инфо»")
+            await ban_user_complete(uid)
             await call.answer("Забанен")
         elif d.startswith("ign_"):
             rid = int(d.split("_")[1])
@@ -652,7 +689,7 @@ async def mod_cb(call: types.CallbackQuery):
             if db_pool:
                 async with db_pool.acquire() as conn:
                     await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
-            await bot.send_message(uid, ":) Поздравляем, вы были разблокированы модераций. Ваши жалобы обнулены. Впредь, соблюдайте правила. Приятного общения.")
+            await bot.send_message(uid, ":) Поздравляем, вы были разблокированы модерацией. Ваши жалобы обнулены. Впредь, соблюдайте правила. Приятного общения.", reply_markup=main_menu)
             await clear_complaints(uid)
             await call.answer("Разбанен. Жалобы обнулены.")
     except Exception as e:
