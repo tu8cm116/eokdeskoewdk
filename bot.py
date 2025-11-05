@@ -293,53 +293,53 @@ async def search_button(msg: types.Message):
     await search(msg)
 
 # --- ЖАЛОБА: НАЧАЛО ---
+# --- Пожаловаться (с Отмена) ---
 @dp.message_handler(lambda m: m.text == "Пожаловаться")
-async def report_button(msg: types.Message, state: FSMContext):
+async def report_button(msg: types.Message):
     if not await get_partner(msg.from_user.id):
         return
+    await report(msg)
+
+@dp.message_handler(commands=['report'])
+async def report(msg: types.Message):
     uid = msg.from_user.id
     partner = await get_partner(uid)
-    await state.update_data(partner=partner)
-    await ReportState.waiting_reason.set()
-    await msg.answer("Опиши проблему:", reply_markup=report_cancel_menu)
+    if partner:
+        user_reporting[uid] = partner
+        cancel_kb = ReplyKeyboardMarkup(resize_keyboard=True)
+        cancel_kb.add(KeyboardButton("Отмена"))
+        await msg.answer("Опиши проблему:", reply_markup=cancel_kb)
+    else:
+        await msg.answer("Ты не в чате.", reply_markup=main_menu)
 
-# ОТМЕНИТЬ ЖАЛОБУ — НОВАЯ КНОПКА!
-@dp.message_handler(lambda m: m.text == "Отменить жалобу", state=ReportState.waiting_reason)
-async def cancel_report(msg: types.Message, state: FSMContext):
-    await state.finish()
+@dp.message_handler(lambda m: m.text == "Отмена" and m.from_user.id in user_reporting)
+async def cancel_report(msg: types.Message):
+    uid = msg.from_user.id
+    user_reporting.pop(uid, None)
     await msg.answer("Жалоба отменена. Продолжайте общение.", reply_markup=chat_menu)
 
-# ОТПРАВКА ЖАЛОБЫ
-@dp.message_handler(state=ReportState.waiting_reason)
-async def report_reason(msg: types.Message, state: FSMContext):
-    data = await state.get_data()
-    partner = data['partner']
+@dp.message_handler(lambda m: m.from_user.id in user_reporting and m.text != "Отмена")
+async def report_reason(msg: types.Message):
+    uid = msg.from_user.id
+    partner = user_reporting.pop(uid)
     reason = msg.text or "Без причины"
     report_id = len(memory_reports) + 1
-    timestamp = msg.date.strftime("%d.%m %H:%M")
-
-    from_code = await get_user_code(msg.from_user.id) or "—"
+    from_code = await get_user_code(uid) or "—"
     to_code = await get_user_code(partner) or "—"
-
-    memory_reports.append({
-        "id": report_id, "from": msg.from_user.id, "to": partner,
-        "reason": reason, "ignored": False, "timestamp": timestamp
-    })
+    memory_reports.append({"id": report_id, "from": uid, "to": partner, "reason": reason, "ignored": False})
     all_complaints[partner] = all_complaints.get(partner, 0) + 1
-
-    await break_pair(msg.from_user.id)
-    await state.finish()
+    await break_pair(uid)
     await msg.answer("Жалоба отправлена.", reply_markup=main_menu)
     await bot.send_message(partner, "Чат завершён из-за жалобы.", reply_markup=main_menu)
-
+    count = all_complaints[partner]
     if MODERATOR_ID:
         await bot.send_message(
             MODERATOR_ID,
             f"<b>ЖАЛОБА #{report_id}</b>\n"
-            f"От: <code>{msg.from_user.id}</code> (<code>{from_code}</code>)\n"
+            f"От: <code>{uid}</code> (<code>{from_code}</code>)\n"
             f"На: <code>{partner}</code> (<code>{to_code}</code>)\n"
             f"Причина: {reason}\n"
-            f"Время: {timestamp}\n"
+            f"Всего жалоб: {count}\n"
             f"/mod",
             parse_mode="HTML"
         )
