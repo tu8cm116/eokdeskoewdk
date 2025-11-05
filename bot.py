@@ -33,8 +33,8 @@ memory_queue = deque()
 memory_pairs = {}
 memory_status = {}      # uid -> 'idle' | 'searching' | 'chatting'
 memory_banned = set()
-memory_reports = []
-user_complaints = {}
+memory_reports = []     # [{id, from, to, reason, ignored}]
+all_complaints = {}     # uid -> вечный счётчик жалоб (обнуляется при разбане)
 user_codes = {}
 
 # ---------- КЛАВИАТУРЫ ----------
@@ -113,7 +113,7 @@ async def init_db():
         log.error(f"БД ошибка: {e}")
         return False
 
-# ---------- СИНХРОНИЗАЦИЯ ПРИ ЗАПУСКЕ ----------
+# ---------- СИНХРОНИЗАЦИЯ ----------
 async def load_banned_users():
     if db_pool:
         async with db_pool.acquire() as conn:
@@ -182,7 +182,7 @@ async def create_pair(a, b):
         async with db_pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("DELETE FROM queue WHERE user_id IN ($1, $2)", a, b)
-                await conn.execute("INSERT INTO pairs(user_id, partner_id) VALUES($1, $2), ($2, $1) ON CONFLICT DO NOTHING", a, b)
+                await conn.execute("INSERT INTO pairs(user_id, partner_id) VALUES($1,$2),($2,$1) ON CONFLICT DO NOTHING", a, b)
     else:
         memory_pairs[a] = b
         memory_pairs[b] = a
@@ -220,8 +220,8 @@ async def is_banned(uid):
 
 # ---------- АВТОБАН ----------
 async def increment_complaints(uid):
-    user_complaints[uid] = user_complaints.get(uid, 0) + 1
-    count = user_complaints[uid]
+    all_complaints[uid] = all_complaints.get(uid, 0) + 1
+    count = all_complaints[uid]
     if count >= 5 and not await is_banned(uid):
         await ban_user_auto(uid)
     return count
@@ -237,10 +237,10 @@ async def ban_user_auto(uid):
         code = await get_user_code(uid) or "—"
         await bot.send_message(MODERATOR_ID, f"АВТОБАН: <code>{uid}</code> (<code>{code}</code>) — 5+ жалоб")
 
+# ОБНУЛЕНИЕ ЖАЛОБ ПРИ РАЗБАНЕ
 async def clear_complaints(uid):
-    user_complaints.pop(uid, None)
-    global memory_reports
-    memory_reports = [r for r in memory_reports if r['to'] != uid]
+    all_complaints.pop(uid, None)  # ← ЖАЛОБЫ ОБНУЛЯЮТСЯ
+    memory_reports = [r for r in memory_reports if r['to'] != uid]  # Удаляем из истории
 
 # ---------- ХЭНДЛЕРЫ ----------
 waiting_tasks = {}
@@ -274,7 +274,7 @@ async def help_cmd(msg: types.Message):
         reply_markup=main_menu
     )
 
-# --- КНОПКИ (ВСЕ РАБОТАЮТ!) ---
+# --- КНОПКИ ---
 @dp.message_handler(lambda m: m.text == "Мой код")
 async def my_code_button(msg: types.Message):
     uid = msg.from_user.id
@@ -305,11 +305,61 @@ async def next_button(msg: types.Message):
         return
     await next_cmd(msg)
 
+# --- Пожаловаться (с Отмена) ---
 @dp.message_handler(lambda m: m.text == "Пожаловаться")
 async def report_button(msg: types.Message):
     if not await get_partner(msg.from_user.id):
         return
     await report(msg)
+
+@dp.message_handler(commands=['report'])
+async def report(msg: types.Message):
+    uid = msg.from_user.id
+    partner = await get_partner(uid)
+    if partner:
+        user_reporting[uid] = partner
+        cancel_kb = ReplyKeyboardMarkup(resize_keyboard=True)
+        cancel_kb.add(KeyboardButton("Отмена"))
+        await msg.answer("Опиши проблему:", reply_markup=cancel_kb)
+    else:
+        await msg.answer("Ты не в чате.", reply_markup=main_menu)
+
+@dp.message_handler(lambda m: m.text == "Отмена" and m.from_user.id in user_reporting)
+async def cancel_report(msg: types.Message):
+    uid = msg.from_user.id
+    user_reporting.pop(uid, None)
+    await msg.answer("Жалоба отменена. Продолжайте общение.", reply_markup=chat_menu)
+
+@dp.message_handler(lambda m: m.from_user.id in user_reporting and m.text != "Отмена")
+async def report_reason(msg: types.Message):
+    uid = msg.from_user.id
+    partner = user_reporting.pop(uid)
+    reason = msg.text or "Без причины"
+    report_id = len(memory_reports) + 1
+
+    from_code = await get_user_code(uid) or "—"
+    to_code = await get_user_code(partner) or "—"
+
+    memory_reports.append({"id": report_id, "from": uid, "to": partner, "reason": reason, "ignored": False})
+    all_complaints[partner] = all_complaints.get(partner, 0) + 1
+
+    await break_pair(uid)
+    await msg.answer("Жалоба отправлена.", reply_markup=main_menu)
+    await bot.send_message(partner, "Чат завершён из-за жалобы.", reply_markup=main_menu)
+
+    count = all_complaints[partner]
+
+    if MODERATOR_ID:
+        await bot.send_message(
+            MODERATOR_ID,
+            f"<b>ЖАЛОБА #{report_id}</b>\n"
+            f"От: <code>{uid}</code> (<code>{from_code}</code>)\n"
+            f"На: <code>{partner}</code> (<code>{to_code}</code>)\n"
+            f"Причина: {reason}\n"
+            f"Всего жалоб: {count}\n"
+            f"/mod",
+            parse_mode="HTML"
+        )
 
 # --- КОМАНДЫ ---
 @dp.message_handler(commands=['search'])
@@ -374,56 +424,6 @@ async def next_cmd(msg: types.Message):
     await stop_cmd(msg)
     await search(msg)
 
-# --- Пожаловаться (с кнопкой Отмена) ---
-@dp.message_handler(commands=['report'])
-async def report(msg: types.Message):
-    uid = msg.from_user.id
-    partner = await get_partner(uid)
-    if partner:
-        user_reporting[uid] = partner
-        cancel_kb = ReplyKeyboardMarkup(resize_keyboard=True)
-        cancel_kb.add(KeyboardButton("Отмена"))
-        await msg.answer("Опиши проблему:", reply_markup=cancel_kb)
-    else:
-        await msg.answer("Ты не в чате.", reply_markup=main_menu)
-
-# --- Обработка "Отмена" при жалобе ---
-@dp.message_handler(lambda m: m.text == "Отмена" and m.from_user.id in user_reporting)
-async def cancel_report(msg: types.Message):
-    uid = msg.from_user.id
-    user_reporting.pop(uid, None)
-    await msg.answer("Жалоба отменена.", reply_markup=chat_menu)
-
-# --- Жалоба (осталось без изменений, но после "Отмена" не сработает) ---
-@dp.message_handler(lambda m: m.from_user.id in user_reporting and m.text != "Отмена")
-async def report_reason(msg: types.Message):
-    uid = msg.from_user.id
-    partner = user_reporting.pop(uid)
-    reason = msg.text or "Без причины"
-    report_id = len(memory_reports) + 1
-
-    from_code = await get_user_code(uid) or "—"
-    to_code = await get_user_code(partner) or "—"
-
-    memory_reports.append({"id": report_id, "from": uid, "to": partner, "reason": reason})
-    await break_pair(uid)
-    await msg.answer("Жалоба отправлена.", reply_markup=main_menu)
-    await bot.send_message(partner, "Чат завершён из-за жалобы.", reply_markup=main_menu)
-
-    count = await increment_complaints(partner)
-
-    if MODERATOR_ID:
-        await bot.send_message(
-            MODERATOR_ID,
-            f"<b>ЖАЛОБА #{report_id}</b>\n"
-            f"От: <code>{uid}</code> (<code>{from_code}</code>)\n"
-            f"На: <code>{partner}</code> (<code>{to_code}</code>)\n"
-            f"Причина: {reason}\n"
-            f"Жалоб на него: {count}\n"
-            f"/mod",
-            parse_mode="HTML"
-        )
-
 # --- МОДЕРАТОРСКИЕ КНОПКИ ---
 @dp.message_handler(lambda m: m.text == "Жалобы")
 async def complaints_button(msg: types.Message):
@@ -449,9 +449,10 @@ async def exit_button(msg: types.Message):
 @dp.message_handler(commands=['complaints'])
 async def show_reports(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID: return
-    if not memory_reports:
-        return await msg.answer("Нет жалоб.", reply_markup=mod_menu)
-    for r in memory_reports:
+    active = [r for r in memory_reports if not r.get('ignored', False)]
+    if not active:
+        return await msg.answer("Нет активных жалоб.", reply_markup=mod_menu)
+    for r in active:
         from_code = await get_user_code(r['from']) or "—"
         to_code = await get_user_code(r['to']) or "—"
         kb = InlineKeyboardMarkup()
@@ -469,18 +470,21 @@ async def show_reports(msg: types.Message):
 @dp.message_handler(commands=['stats'])
 async def stats(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID: return
-
     total_users = len(memory_status)
     chatting = sum(1 for s in memory_status.values() if s == 'chatting')
     searching = sum(1 for s in memory_status.values() if s == 'searching')
     banned = len(memory_banned)
+    total_complaints = sum(all_complaints.values())
+    users_with_complaints = len(all_complaints)
 
     await msg.answer(
         f"<b>Статистика</b>\n"
-        f"Всего пользователей: {total_users}\n"
+        f"Пользователей: {total_users}\n"
         f"В чате: {chatting}\n"
         f"В поиске: {searching}\n"
-        f"Забанено: {banned}",
+        f"Забанено: {banned}\n"
+        f"Всего жалоб: {total_complaints}\n"
+        f"Пожаловались на: {users_with_complaints} чел.",
         parse_mode="HTML",
         reply_markup=mod_menu
     )
@@ -510,7 +514,7 @@ async def user_info(msg: types.Message):
         uid = int(query)
     else:
         for u, c in user_codes.items():
-            if c == query.upper():
+            if c np.equal(query.upper()):
                 uid = u
                 break
         if not uid and db_pool:
@@ -523,14 +527,14 @@ async def user_info(msg: types.Message):
     status = "в чате" if await get_partner(uid) else "не в чате"
     banned = "да" if await is_banned(uid) else "нет"
     code = await get_user_code(uid) or "Нет кода"
-    complaints = user_complaints.get(uid, 0)
+    total_complaints = all_complaints.get(uid, 0)
     await msg.answer(
         f"<b>Пользователь</b>\n"
         f"ID: <code>{uid}</code>\n"
         f"Код: <code>{code}</code>\n"
         f"Статус: {status}\n"
         f"Забанен: {banned}\n"
-        f"Жалоб: {complaints}",
+        f"Всего жалоб: {total_complaints}",
         parse_mode="HTML"
     )
 
@@ -589,7 +593,7 @@ async def unban_user(msg: types.Message):
         async with db_pool.acquire() as conn:
             await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
     await bot.send_message(uid, "Вы разбанены.")
-    await clear_complaints(uid)
+    await clear_complaints(uid)  # ← ОБНУЛЯЕМ ЖАЛОБЫ
     await msg.answer("Разбанен. Жалобы обнулены.")
 
 # --- CALLBACK ---
@@ -610,9 +614,11 @@ async def mod_cb(call: types.CallbackQuery):
             await call.answer("Забанен")
         elif d.startswith("ign_"):
             rid = int(d.split("_")[1])
-            global memory_reports
-            memory_reports = [r for r in memory_reports if r['id'] != rid]
-            await call.answer("Игнор")
+            for r in memory_reports:
+                if r['id'] == rid:
+                    r['ignored'] = True
+                    break
+            await call.answer("Жалоба скрыта (осталась в статистике)")
         elif d.startswith("unban_"):
             uid = int(d.split("_")[1])
             memory_banned.discard(uid)
@@ -620,7 +626,7 @@ async def mod_cb(call: types.CallbackQuery):
                 async with db_pool.acquire() as conn:
                     await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
             await bot.send_message(uid, "Вы разбанены.")
-            await clear_complaints(uid)
+            await clear_complaints(uid)  # ← ОБНУЛЯЕМ ЖАЛОБЫ
             await call.answer("Разбанен. Жалобы обнулены.")
     except Exception as e:
         log.error(f"Ошибка: {e}")
