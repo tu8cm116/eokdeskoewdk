@@ -289,29 +289,6 @@ async def search_button(msg: types.Message):
         return
     await search(msg)
 
-# ОТМЕНА ТОЛЬКО В ПОИСКЕ
-@dp.message_handler(lambda m: m.text == "Отмена", state=None)
-async def cancel_search(msg: types.Message, state: FSMContext):
-    uid = msg.from_user.id
-    if uid in waiting_tasks:
-        waiting_tasks[uid].cancel()
-        del waiting_tasks[uid]
-    await remove_from_queue(uid)
-    await state.finish()
-    await msg.answer("Поиск отменён.", reply_markup=main_menu)
-
-@dp.message_handler(lambda m: m.text == "Стоп")
-async def stop_button(msg: types.Message):
-    if not await get_partner(msg.from_user.id):
-        return
-    await stop_cmd(msg)
-
-@dp.message_handler(lambda m: m.text == "Следующий")
-async def next_button(msg: types.Message):
-    if not await get_partner(msg.from_user.id):
-        return
-    await next_cmd(msg)
-
 # --- ЖАЛОБА: НАЧАЛО ---
 @dp.message_handler(lambda m: m.text == "Пожаловаться")
 async def report_button(msg: types.Message, state: FSMContext):
@@ -325,7 +302,7 @@ async def report_button(msg: types.Message, state: FSMContext):
     cancel_kb.add(KeyboardButton("Отмена"))
     await msg.answer("Опиши проблему:", reply_markup=cancel_kb)
 
-# ОТМЕНА ЖАЛОБЫ — РАБОТАЕТ!
+# ОТМЕНА ЖАЛОБЫ — ВОЗВРАЩАЕТ В ЧАТ!
 @dp.message_handler(lambda m: m.text == "Отмена", state=ReportState.waiting_reason)
 async def cancel_report(msg: types.Message, state: FSMContext):
     await state.finish()
@@ -365,6 +342,29 @@ async def report_reason(msg: types.Message, state: FSMContext):
             f"/mod",
             parse_mode="HTML"
         )
+
+# --- ОТМЕНА ПОИСКА (ТОЛЬКО В ПОИСКЕ!) ---
+@dp.message_handler(lambda m: m.text == "Отмена", state=None)
+async def cancel_search(msg: types.Message, state: FSMContext):
+    uid = msg.from_user.id
+    if uid in waiting_tasks:
+        waiting_tasks[uid].cancel()
+        del waiting_tasks[uid]
+    await remove_from_queue(uid)
+    await state.finish()
+    await msg.answer("Поиск отменён.", reply_markup=main_menu)
+
+@dp.message_handler(lambda m: m.text == "Стоп")
+async def stop_button(msg: types.Message):
+    if not await get_partner(msg.from_user.id):
+        return
+    await stop_cmd(msg)
+
+@dp.message_handler(lambda m: m.text == "Следующий")
+async def next_button(msg: types.Message):
+    if not await get_partner(msg.from_user.id):
+        return
+    await next_cmd(msg)
 
 # --- КОМАНДЫ ---
 @dp.message_handler(commands=['search'])
