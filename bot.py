@@ -34,7 +34,7 @@ memory_pairs = {}
 memory_status = {}      # uid -> 'idle' | 'searching' | 'chatting'
 memory_banned = set()
 memory_reports = []     # [{id, from, to, reason, ignored}]
-all_complaints = {}     # uid -> вечный счётчик жалоб (обнуляется при разбане)
+all_complaints = {}     # uid -> счётчик жалоб (обнуляется при разбане)
 user_codes = {}
 
 # ---------- КЛАВИАТУРЫ ----------
@@ -239,8 +239,9 @@ async def ban_user_auto(uid):
 
 # ОБНУЛЕНИЕ ЖАЛОБ ПРИ РАЗБАНЕ
 async def clear_complaints(uid):
-    all_complaints.pop(uid, None)  # ← ЖАЛОБЫ ОБНУЛЯЮТСЯ
-    memory_reports = [r for r in memory_reports if r['to'] != uid]  # Удаляем из истории
+    all_complaints.pop(uid, None)
+    global memory_reports
+    memory_reports = [r for r in memory_reports if r['to'] != uid]
 
 # ---------- ХЭНДЛЕРЫ ----------
 waiting_tasks = {}
@@ -514,7 +515,7 @@ async def user_info(msg: types.Message):
         uid = int(query)
     else:
         for u, c in user_codes.items():
-            if c np.equal(query.upper()):
+            if c == query.upper():  # ИСПРАВЛЕНО: == вместо np.equal
                 uid = u
                 break
         if not uid and db_pool:
@@ -551,7 +552,7 @@ async def ban_user(msg: types.Message):
         uid = int(query)
     else:
         for u, c in user_codes.items():
-            if c == query.upper():
+            if c == query.upper():  # ИСПРАВЛЕНО
                 uid = u
                 break
         if not uid and db_pool:
@@ -580,7 +581,7 @@ async def unban_user(msg: types.Message):
         uid = int(query)
     else:
         for u, c in user_codes.items():
-            if c == query.upper():
+            if c == query.upper():  # ИСПРАВЛЕНО
                 uid = u
                 break
         if not uid and db_pool:
@@ -593,7 +594,7 @@ async def unban_user(msg: types.Message):
         async with db_pool.acquire() as conn:
             await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
     await bot.send_message(uid, "Вы разбанены.")
-    await clear_complaints(uid)  # ← ОБНУЛЯЕМ ЖАЛОБЫ
+    await clear_complaints(uid)  # ОБНУЛЯЕМ ЖАЛОБЫ
     await msg.answer("Разбанен. Жалобы обнулены.")
 
 # --- CALLBACK ---
@@ -626,7 +627,7 @@ async def mod_cb(call: types.CallbackQuery):
                 async with db_pool.acquire() as conn:
                     await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
             await bot.send_message(uid, "Вы разбанены.")
-            await clear_complaints(uid)  # ← ОБНУЛЯЕМ ЖАЛОБЫ
+            await clear_complaints(uid)  # ОБНУЛЯЕМ ЖАЛОБЫ
             await call.answer("Разбанен. Жалобы обнулены.")
     except Exception as e:
         log.error(f"Ошибка: {e}")
