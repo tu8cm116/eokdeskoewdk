@@ -293,25 +293,26 @@ async def search_button(msg: types.Message):
         return
     await search(msg)
 
-# --- ОСНОВНЫЕ КНОПКИ ЧАТА (должны работать ВСЕГДА когда пользователь в чате) ---
-@dp.message_handler(lambda m: m.text in ["Стоп", "Следующий", "Пожаловаться"] and await get_partner(m.from_user.id))
-async def chat_buttons(msg: types.Message):
-    uid = msg.from_user.id
-    
-    # Если пользователь в процессе жалобы, но нажал другую кнопку - отменяем жалобу
-    if uid in user_reporting and msg.text != "Пожаловаться":
-        user_reporting.pop(uid, None)
-        await msg.answer("Жалоба отменена.", reply_markup=chat_menu)
+# --- КНОПКИ ЧАТА ---
+@dp.message_handler(lambda m: m.text == "Стоп")
+async def stop_button(msg: types.Message):
+    if not await get_partner(msg.from_user.id):
         return
-    
-    if msg.text == "Стоп":
-        await stop_cmd(msg)
-    elif msg.text == "Следующий":
-        await next_cmd(msg)
-    elif msg.text == "Пожаловаться":
-        await report(msg)
+    await stop_cmd(msg)
 
-# --- ЖАЛОБА: НАЧАЛО ---
+@dp.message_handler(lambda m: m.text == "Следующий")
+async def next_button(msg: types.Message):
+    if not await get_partner(msg.from_user.id):
+        return
+    await next_cmd(msg)
+
+@dp.message_handler(lambda m: m.text == "Пожаловаться")
+async def report_button(msg: types.Message):
+    if not await get_partner(msg.from_user.id):
+        return
+    await report(msg)
+
+# --- ЖАЛОБА ---
 @dp.message_handler(commands=['report'])
 async def report(msg: types.Message):
     uid = msg.from_user.id
@@ -323,9 +324,12 @@ async def report(msg: types.Message):
         await msg.answer("Ты не в чате.", reply_markup=main_menu)
 
 # --- ОТМЕНА ЖАЛОБЫ ---
-@dp.message_handler(lambda m: m.text == "Отменить жалобу" and m.from_user.id in user_reporting)
+@dp.message_handler(lambda m: m.text == "Отменить жалобу")
 async def cancel_report(msg: types.Message):
     uid = msg.from_user.id
+    if uid not in user_reporting:
+        return
+    
     user_reporting.pop(uid, None)
     await msg.answer("Жалоба отменена. Продолжайте общение.", reply_markup=chat_menu)
 
@@ -362,7 +366,7 @@ async def report_reason(msg: types.Message):
             parse_mode="HTML"
         )
 
-# --- ОТМЕНА ПОИСКА (ТОЛЬКО "Отмена") ---
+# --- ОТМЕНА ПОИСКА ---
 @dp.message_handler(lambda m: m.text == "Отмена", state=None)
 async def cancel_search(msg: types.Message, state: FSMContext):
     uid = msg.from_user.id
