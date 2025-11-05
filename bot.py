@@ -33,22 +33,22 @@ memory_status = {}
 memory_banned = set()
 memory_reports = []
 
-# ---------- КЛАВИАТУРЫ ----------
-main_menu = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
-main_menu.add(KeyboardButton("/search"), KeyboardButton("/help"))
+# ---------- КРАСИВЫЕ КЛАВИАТУРЫ ----------
+main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
+main_menu.add(KeyboardButton("Найти"), KeyboardButton("Помощь"))
 
 chat_menu = ReplyKeyboardMarkup(resize_keyboard=True)
-chat_menu.add(KeyboardButton("/stop"), KeyboardButton("/next"))
-chat_menu.add(KeyboardButton("/report"))
+chat_menu.add(KeyboardButton("Стоп"), KeyboardButton("Следующий"))
+chat_menu.add(KeyboardButton("Пожаловаться"))
 
 waiting_menu = ReplyKeyboardMarkup(resize_keyboard=True)
-waiting_menu.add(KeyboardButton("/cancel"))
+waiting_menu.add(KeyboardButton("Отмена"))
 
 mod_menu = ReplyKeyboardMarkup(resize_keyboard=True)
-mod_menu.add(KeyboardButton("/complaints"), KeyboardButton("/stats"))
-mod_menu.add(KeyboardButton("/bans"), KeyboardButton("/exit"))
+mod_menu.add(KeyboardButton("Жалобы"), KeyboardButton("Статистика"))
+mod_menu.add(KeyboardButton("Баны"), KeyboardButton("Выход"))
 
-# ---------- БД ----------
+# ---------- БД (с фиксом banned) ----------
 async def init_db():
     global db_pool
     if not DATABASE_URL:
@@ -57,7 +57,6 @@ async def init_db():
     try:
         db_pool = await asyncpg.create_pool(dsn=DATABASE_URL, min_size=1, max_size=5)
         async with db_pool.acquire() as conn:
-            # Создаём таблицы
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -67,16 +66,15 @@ async def init_db():
                 CREATE TABLE IF NOT EXISTS pairs (user_id BIGINT PRIMARY KEY, partner_id BIGINT);
                 CREATE INDEX IF NOT EXISTS idx_queue ON queue (joined_at);
             """)
-            # ДОБАВЛЯЕМ СТОЛБЕЦ banned, ЕСЛИ ЕГО НЕТ
+            # Добавляем banned, если нет
             try:
                 await conn.execute("ALTER TABLE users ADD COLUMN banned BOOLEAN DEFAULT FALSE")
-                log.info("Добавлен столбец 'banned' в таблицу users")
+                log.info("Добавлен столбец 'banned'")
             except asyncpg.DuplicateColumnError:
-                pass  # уже есть
+                pass
             except Exception as e:
-                log.warning(f"Не удалось добавить столбец banned: {e}")
-
-        log.info("PostgreSQL подключён и схема обновлена")
+                log.warning(f"Ошибка добавления banned: {e}")
+        log.info("PostgreSQL подключён")
         return True
     except Exception as e:
         log.error(f"БД ошибка: {e}")
@@ -161,7 +159,6 @@ async def is_banned(uid):
 waiting_tasks = {}
 user_reporting = {}
 
-# --- МОДЕРАТОРСКИЕ (ПЕРВЫМИ!) ---
 @dp.message_handler(commands=['mod'])
 async def mod_entry(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID:
@@ -172,7 +169,6 @@ async def mod_entry(msg: types.Message):
 async def get_id(msg: types.Message):
     await msg.answer(f"Твой ID: <code>{msg.from_user.id}</code>", parse_mode="HTML")
 
-# --- ОСНОВНЫЕ ---
 @dp.message_handler(commands=['start'])
 async def start(msg: types.Message):
     uid = msg.from_user.id
@@ -184,13 +180,11 @@ async def start(msg: types.Message):
 @dp.message_handler(commands=['help'])
 async def help_cmd(msg: types.Message):
     await msg.answer(
-        "<b>Команды:</b>\n"
-        "/search — найти\n"
-        "/stop — выйти\n"
-        "/next — следующий\n"
-        "/report — пожаловаться\n"
-        "/cancel — отмена",
-        parse_mode="HTML",
+        "• Найти — начать поиск\n"
+        "• Стоп — выйти\n"
+        "• Следующий — найти нового\n"
+        "• Пожаловаться — если плохо\n"
+        "• Отмена — остановить поиск",
         reply_markup=main_menu
     )
 
@@ -272,7 +266,7 @@ async def report_reason(msg: types.Message):
     if MODERATOR_ID:
         await bot.send_message(MODERATOR_ID, f"ЖАЛОБА!\nОт: {uid}\nНа: {partner}\nПричина: {reason}\n/mod")
 
-# --- МОДЕРАТОРСКИЕ ---
+# --- МОДЕРАТОРСКИЕ КОМАНДЫ ---
 @dp.message_handler(commands=['complaints'])
 async def show_reports(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID: return
@@ -348,7 +342,7 @@ async def mod_cb(call: types.CallbackQuery):
         log.error(f"Ошибка: {e}")
         await call.answer("Ошибка")
 
-# --- ПЕРЕСЫЛКА (в самом конце!) ---
+# --- ПЕРЕСЫЛКА ---
 @dp.message_handler(content_types=types.ContentTypes.ANY)
 async def relay(msg: types.Message):
     partner = await get_partner(msg.from_user.id)
