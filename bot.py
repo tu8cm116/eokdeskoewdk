@@ -74,7 +74,6 @@ async def init_db():
     try:
         db_pool = await asyncpg.create_pool(dsn=DATABASE_URL, min_size=1, max_size=5)
         async with db_pool.acquire() as conn:
-            # Основные таблицы
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -84,12 +83,10 @@ async def init_db():
                 CREATE TABLE IF NOT EXISTS pairs (user_id BIGINT PRIMARY KEY, partner_id BIGINT);
                 CREATE INDEX IF NOT EXISTS idx_queue ON queue (joined_at);
             """)
-            # Безопасно добавляем banned
             try:
                 await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS banned BOOLEAN DEFAULT FALSE")
             except:
                 pass
-            # Безопасно добавляем code
             try:
                 await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS code TEXT")
             except:
@@ -104,13 +101,11 @@ async def init_db():
 async def ensure_user(uid):
     if db_pool:
         async with db_pool.acquire() as conn:
-            # Если пользователя нет — создаём
             exists = await conn.fetchval("SELECT 1 FROM users WHERE user_id = $1", uid)
             if not exists:
                 code = await get_or_create_code(uid)
                 await conn.execute("INSERT INTO users(user_id, code) VALUES($1, $2)", uid, code)
             else:
-                # Проверяем код
                 code = await conn.fetchval("SELECT code FROM users WHERE user_id = $1", uid)
                 if not code:
                     code = await get_or_create_code(uid)
@@ -125,7 +120,6 @@ async def add_to_queue(uid):
             await conn.execute("INSERT INTO queue(user_id) VALUES($1) ON CONFLICT DO NOTHING", uid)
     else:
         memory_queue.append((uid, asyncio.get_event_loop().time()))
-    log.info(f"Очередь: {[u[0] for u in memory_queue] if not db_pool else 'БД'}")
 
 async def remove_from_queue(uid):
     if db_pool:
@@ -232,7 +226,7 @@ async def my_id_button(msg: types.Message):
 @dp.message_handler(lambda m: m.text == "Найти")
 async def search_button(msg: types.Message):
     if await get_partner(msg.from_user.id):
-        return  # Уже в чате
+        return
     await search(msg)
 
 @dp.message_handler(lambda m: m.text == "Отмена")
@@ -244,7 +238,7 @@ async def cancel_button(msg: types.Message):
 @dp.message_handler(lambda m: m.text == "Стоп")
 async def stop_button(msg: types.Message):
     if not await get_partner(msg.from_user.id):
-        return  # Не в чате — игнор
+        return
     await stop_cmd(msg)
 
 @dp.message_handler(lambda m: m.text == "Следующий")
@@ -364,7 +358,7 @@ async def bans_button(msg: types.Message):
 @dp.message_handler(lambda m: m.text == "Выход")
 async def exit_button(msg: types.Message):
     if msg.from_user.id != MODERATOR_ID: return
-    await msg.answer("Выход.", reply_markup=ReplyKeyboardRemove())
+    await msg.answer("Выход в главное меню.", reply_markup=main_menu)
 
 # --- МОДЕРАТОРСКИЕ КОМАНДЫ ---
 @dp.message_handler(commands=['complaints'])
@@ -409,6 +403,94 @@ async def show_bans(msg: types.Message):
     for uid in memory_banned:
         kb.add(InlineKeyboardButton(f"Разбанить {uid}", callback_data=f"unban_{uid}"))
     await msg.answer("Забаненные:", reply_markup=kb)
+
+# --- НОВЫЕ КОМАНДЫ: /user, /ban, /unban ---
+@dp.message_handler(commands=['user'])
+async def user_info(msg: types.Message):
+    if msg.from_user.id != MODERATOR_ID:
+        return await msg.answer("Только для модератора.")
+    text = msg.text.strip()
+    if len(text.split()) < 2:
+        return await msg.answer("Использование: /user <id или код>")
+    query = text.split()[1]
+
+    uid = None
+    if query.isdigit():
+        uid = int(query)
+    else:
+        for u, c in user_codes.items():
+            if c == query.upper():
+                uid = u
+                break
+        if not uid and db_pool:
+            async with db_pool.acquire() as conn:
+                uid = await conn.fetchval("SELECT user_id FROM users WHERE code = $1", query.upper())
+
+    if not uid:
+        return await msg.answer("Пользователь не найден.")
+
+    status = "в чате" if await get_partner(uid) else "не в чате"
+    banned = "да" if await is_banned(uid) else "нет"
+    code = await get_or_create_code(uid)
+    await msg.answer(
+        f"<b>Пользователь</b>\n"
+        f"ID: <code>{uid}</code>\n"
+        f"Код: <code>{code}</code>\n"
+        f"Статус: {status}\n"
+        f"Забанен: {banned}",
+        parse_mode="HTML"
+    )
+
+@dp.message_handler(commands=['ban'])
+async def ban_user(msg: types.Message):
+    if msg.from_user.id != MODERATOR_ID:
+        return
+    text = msg.text.strip()
+    if len(text.split()) < 2:
+        return await msg.answer("Использование: /ban <id или код>")
+    query = text.split()[1]
+    uid = None
+    if query.isdigit():
+        uid = int(query)
+    else:
+        for u, c in user_codes.items():
+            if c == query.upper():
+                uid = u
+                break
+        if not uid and db_pool:
+            async with db_pool.acquire() as conn:
+                uid = await conn.fetchval("SELECT user_id FROM users WHERE code = $1", query.upper())
+    if not uid:
+        return await msg.answer("Не найден.")
+    memory_banned.add(uid)
+    await break_pair(uid)
+    await bot.send_message(uid, "Вы забанены.")
+    await msg.answer("Забанен.")
+
+@dp.message_handler(commands=['unban'])
+async def unban_user(msg: types.Message):
+    if msg.from_user.id != MODERATOR_ID:
+        return
+    text = msg.text.strip()
+    if len(text.split()) < 2:
+        return await msg.answer("Использование: /unban <id или код>")
+    query = text.split()[1]
+    uid = None
+    if query.isdigit():
+        uid = int(query)
+    else:
+        for u, c in user_codes.items():
+            if c == query.upper():
+                uid = u
+                break
+        if not uid and db_pool:
+            async with db_pool.acquire() as conn:
+                uid = await conn.fetchval("SELECT user_id FROM users WHERE code = $1", query.upper())
+    if not uid:
+        return await msg.answer("Не найден.")
+    memory_banned.discard(uid)
+    await bot.send_message(uid, "Вы разбанены.")
+    await msg.answer("Разбанен.")
 
 # --- CALLBACK ---
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith(("ban_", "ign_", "unban_")))
