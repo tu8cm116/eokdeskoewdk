@@ -297,6 +297,45 @@ async def clear_complaints(uid):
     global memory_reports
     memory_reports = [r for r in memory_reports if r['to'] != uid]
 
+# ---------- ПОИСК СОБЕСЕДНИКА ----------
+async def search_for_user(uid):
+    """Вспомогательная функция для запуска поиска пользователя"""
+    if await is_banned(uid):
+        await bot.send_message(uid, "🚫 Вы были заблокированы. Попробуйте снова после снятия блокировки.", reply_markup=main_menu)
+        return
+        
+    if await get_partner(uid):
+        await bot.send_message(uid, "Ты уже в чате.", reply_markup=chat_menu)
+        return
+        
+    await add_to_queue(uid)
+    await bot.send_message(uid, "🔍 Ищем собеседника...", reply_markup=waiting_menu)
+    task = asyncio.create_task(wait_for_partner(uid))
+    waiting_tasks[uid] = task
+
+async def wait_for_partner(uid):
+    try:
+        for _ in range(30):
+            await asyncio.sleep(1)
+            if await get_partner(uid):
+                if uid in waiting_tasks:
+                    del waiting_tasks[uid]
+                return
+            partner = await find_partner(uid)
+            if partner:
+                await create_pair(uid, partner)
+                await bot.send_message(uid, "Собеседник найден! Соблюдайте правила.", reply_markup=chat_menu)
+                await bot.send_message(partner, "Собеседник найден! Соблюдайте правила.", reply_markup=chat_menu)
+                if uid in waiting_tasks:
+                    del waiting_tasks[uid]
+                return
+        await remove_from_queue(uid)
+        if uid in waiting_tasks:
+            del waiting_tasks[uid]
+        await bot.send_message(uid, "К сожалению, нет свободных или активных пользователей. Попробуй позже.", reply_markup=main_menu)
+    except asyncio.CancelledError:
+        pass
+
 # ---------- ХЭНДЛЕРЫ ----------
 waiting_tasks = {}
 
@@ -337,7 +376,7 @@ async def my_code_button(msg: types.Message):
 async def search_button(msg: types.Message):
     if await get_partner(msg.from_user.id):
         return
-    await search(msg)
+    await search_for_user(msg.from_user.id)
 
 # --- КНОПКИ ЧАТА ---
 @dp.message_handler(lambda m: m.text == "⛔️ Стоп")
@@ -427,38 +466,7 @@ async def cancel_search(msg: types.Message, state: FSMContext):
 # --- КОМАНДЫ ---
 @dp.message_handler(commands=['search'])
 async def search(msg: types.Message):
-    uid = msg.from_user.id
-    if await is_banned(uid):
-        return await msg.answer("🚫 Вы были заблокированы. Попробуйте снова после снятия блокировки.", reply_markup=main_menu)
-    if await get_partner(uid):
-        return await msg.answer("Ты уже в чате.", reply_markup=chat_menu)
-    await add_to_queue(uid)
-    await msg.answer("🔍 Ищем собеседника...", reply_markup=waiting_menu)
-    task = asyncio.create_task(wait_for_partner(uid))
-    waiting_tasks[uid] = task
-
-async def wait_for_partner(uid):
-    try:
-        for _ in range(30):
-            await asyncio.sleep(1)
-            if await get_partner(uid):
-                if uid in waiting_tasks:
-                    del waiting_tasks[uid]
-                return
-            partner = await find_partner(uid)
-            if partner:
-                await create_pair(uid, partner)
-                await bot.send_message(uid, "Собеседник найден! Соблюдайте правила.", reply_markup=chat_menu)
-                await bot.send_message(partner, "Собеседник найден! Соблюдайте правила.", reply_markup=chat_menu)
-                if uid in waiting_tasks:
-                    del waiting_tasks[uid]
-                return
-        await remove_from_queue(uid)
-        if uid in waiting_tasks:
-            del waiting_tasks[uid]
-        await bot.send_message(uid, "К сожалению, нет свободных или активных пользователей. Попробуй позже.", reply_markup=main_menu)
-    except asyncio.CancelledError:
-        pass
+    await search_for_user(msg.from_user.id)
 
 @dp.message_handler(commands=['cancel'])
 async def cancel(msg: types.Message):
@@ -482,8 +490,19 @@ async def stop_cmd(msg: types.Message):
 
 @dp.message_handler(commands=['next'])
 async def next_cmd(msg: types.Message):
+    uid = msg.from_user.id
+    partner = await get_partner(uid)
+    
+    # Завершаем текущий чат
     await stop_cmd(msg)
-    await search(msg)
+    
+    # Если был собеседник, запускаем поиск и для него
+    if partner:
+        await bot.send_message(partner, "🔄 Собеседник ищет нового партнера...", reply_markup=waiting_menu)
+        await search_for_user(partner)
+    
+    # Запускаем поиск для текущего пользователя
+    await search_for_user(uid)
 
 # --- МОДЕРАТОРСКИЕ ---
 @dp.message_handler(lambda m: m.text == "📋 Жалобы")
