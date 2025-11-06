@@ -27,7 +27,8 @@ if not TOKEN:
     raise RuntimeError("BOT_TOKEN не задан!")
 
 bot = Bot(token=TOKEN, parse_mode="HTML")
-dp = Dispatcher(bot)
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
 db_pool = None
 
 # ---------- Состояния ----------
