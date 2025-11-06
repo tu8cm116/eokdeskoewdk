@@ -26,19 +26,8 @@ MODERATOR_ID = int(os.getenv("MODERATOR_ID", "0"))
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN не задан!")
 
-from aiogram import Bot, Dispatcher
-from aiogram.fsm.storage.memory import MemoryStorage  # ← ДОБАВЬ ЭТО
-
-# ...
-
 bot = Bot(token=TOKEN, parse_mode="HTML")
-
-# ← ДОБАВЬ СЮДА:
-storage = MemoryStorage()
-
-# ← ЗАМЕНИ ЭТУ СТРОКУ:
-dp = Dispatcher(bot, storage=storage)  # ← storage=storage!
-
+dp = Dispatcher(bot)
 db_pool = None
 
 # ---------- Состояния ----------
