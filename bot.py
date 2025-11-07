@@ -33,8 +33,8 @@ dp = Dispatcher(bot, storage=storage)
 db_pool = None
 
 # ---------- КАНАЛ (ПРИВАТНЫЙ) ----------
-CHANNEL_INVITE_LINK = "https://t.me/+LLZuriSEQpk0ZDVk"
-CHANNEL_ID = "LLZuriSEQpk0ZDVk"  # Извлечено из приватной ссылки (без https://t.me/+)
+CHANNEL_INVITE_LINK = "https://t.me/+tFTpKIVFWVY4ZmZk"
+CHANNEL_ID = "tFTpKIVFWVY4ZmZk"  # Извлечено из приватной ссылки (без https://t.me/+)
 
 # Клавиатура подписки
 subscribe_kb = InlineKeyboardMarkup()
