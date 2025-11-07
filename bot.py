@@ -13,7 +13,7 @@ from aiogram.types import (
 )
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.contrib.fsm_storage.memory import import MemoryStorage
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
 # ---------- Логирование ----------
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
