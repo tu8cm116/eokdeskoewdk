@@ -13,7 +13,7 @@ from aiogram.types import (
 )
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.contrib.fsm_storage.memory import MemoryStorage  # ← ИСПРАВЛЕНО: для 2.x!
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
 # ---------- Логирование ----------
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
@@ -23,13 +23,15 @@ log = logging.getLogger(__name__)
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 MODERATOR_ID = int(os.getenv("MODERATOR_ID", "0"))
+CHANNEL_USERNAME = "@RACERSrch"  # ← ДОБАВЛЕНО: канал для подписки
+CHANNEL_URL = "https://t.me/RACERSrch"  # ← ДОБАВЛЕНО: ссылка на канал
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN не задан!")
 
 bot = Bot(token=TOKEN, parse_mode="HTML")
-storage = MemoryStorage()  # ← ИСПРАВЛЕНО: для 2.x
-dp = Dispatcher(bot, storage=storage)  # ← ИСПРАВЛЕНО: передаём storage
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
 db_pool = None
 
 # ---------- Состояния ----------
@@ -64,6 +66,23 @@ report_cancel_menu.add(KeyboardButton("❌ Отменить жалобу"))
 mod_menu = ReplyKeyboardMarkup(resize_keyboard=True)
 mod_menu.add(KeyboardButton("📋 Жалобы"), KeyboardButton("📊 Статистика"))
 mod_menu.add(KeyboardButton("🔨 Баны"), KeyboardButton("🚪 Выйти"))
+
+# ---------- ПРОВЕРКА ПОДПИСКИ ---------- ← ДОБАВЛЕНО: новый блок
+async def check_subscription(user_id):
+    """Проверяет, подписан ли пользователь на канал"""
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except Exception as e:
+        log.error(f"Ошибка проверки подписки для {user_id}: {e}")
+        return False
+
+def get_subscription_keyboard():
+    """Клавиатура с кнопкой подписки"""
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("📢 Подписаться на RACERS", url=CHANNEL_URL))
+    keyboard.add(InlineKeyboardButton("✅ Я подписался", callback_data="check_subscription"))
+    return keyboard
 
 # ---------- КОДЫ ----------
 def generate_code():
@@ -347,7 +366,28 @@ async def start(msg: types.Message):
     await break_pair(uid)
     await remove_from_queue(uid)
     memory_status[uid] = 'idle'
+    
+    # ← ДОБАВЛЕНО: проверка подписки
+    if not await check_subscription(uid):
+        await msg.answer(
+            "📢 <b>Для использования бота необходимо подписаться на канал RACERS</b>\n\n"
+            "После подписки нажмите кнопку «✅ Я подписался»",
+            reply_markup=get_subscription_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+        
     await msg.answer("🗡 Добро пожаловать в ARMOR.\n\nАнонимный чат для общения от проекта Racers. Прежде, чем приступать к общению ознакомьтесь с информацией, нажав на кнопку «Инфо».\n\n🎯 Выберите действие ниже:", reply_markup=main_menu)
+
+# ← ДОБАВЛЕНО: обработчик проверки подписки
+@dp.callback_query_handler(lambda c: c.data == "check_subscription")
+async def check_subscription_callback(call: types.CallbackQuery):
+    uid = call.from_user.id
+    if await check_subscription(uid):
+        await call.message.delete()
+        await call.message.answer("🗡 Добро пожаловать в ARMOR.\n\nАнонимный чат для общения от проекта Racers. Прежде, чем приступать к общению ознакомьтесь с информацией, нажав на кнопку «Инфо».\n\n🎯 Выберите действие ниже:", reply_markup=main_menu)
+    else:
+        await call.answer("❌ Вы не подписаны на канал! Подпишитесь и нажмите снова.", show_alert=True)
 
 @dp.message_handler(commands=['mod'])
 async def mod_entry(msg: types.Message):
@@ -357,6 +397,16 @@ async def mod_entry(msg: types.Message):
 
 @dp.message_handler(lambda m: m.text == "ℹ️ Инфо")
 async def help_cmd(msg: types.Message):
+    # ← ДОБАВЛЕНО: проверка подписки
+    if not await check_subscription(msg.from_user.id):
+        await msg.answer(
+            "📢 <b>Для использования бота необходимо подписаться на канал RACERS</b>\n\n"
+            "После подписки нажмите кнопку «✅ Я подписался»",
+            reply_markup=get_subscription_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+        
     await msg.answer(
         "С правилами и инструкцией обжалования бана вы можете ознакомиться по данной ссылке:\n\n"
         "🔗 https://telegra.ph/ARMOR-11-05-11\n\n"
@@ -368,12 +418,32 @@ async def help_cmd(msg: types.Message):
 # --- КНОПКИ ---
 @dp.message_handler(lambda m: m.text == "🔑 Мой код")
 async def my_code_button(msg: types.Message):
+    # ← ДОБАВЛЕНО: проверка подписки
+    if not await check_subscription(msg.from_user.id):
+        await msg.answer(
+            "📢 <b>Для использования бота необходимо подписаться на канал RACERS</b>\n\n"
+            "После подписки нажмите кнопку «✅ Я подписался»",
+            reply_markup=get_subscription_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+        
     uid = msg.from_user.id
     code = await get_or_create_code(uid)
     await msg.answer(f"🔑 Твой уникальный код: <code>{code}</code>", parse_mode="HTML", reply_markup=main_menu)
 
 @dp.message_handler(lambda m: m.text == "🔍 Найти собеседника")
 async def search_button(msg: types.Message):
+    # ← ДОБАВЛЕНО: проверка подписки
+    if not await check_subscription(msg.from_user.id):
+        await msg.answer(
+            "📢 <b>Для использования бота необходимо подписаться на канал RACERS</b>\n\n"
+            "После подписки нажмите кнопку «✅ Я подписался»",
+            reply_markup=get_subscription_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+        
     if await get_partner(msg.from_user.id):
         return
     await search_for_user(msg.from_user.id)
@@ -466,6 +536,16 @@ async def cancel_search(msg: types.Message, state: FSMContext):
 # --- КОМАНДЫ ---
 @dp.message_handler(commands=['search'])
 async def search(msg: types.Message):
+    # ← ДОБАВЛЕНО: проверка подписки
+    if not await check_subscription(msg.from_user.id):
+        await msg.answer(
+            "📢 <b>Для использования бота необходимо подписаться на канал RACERS</b>\n\n"
+            "После подписки нажмите кнопку «✅ Я подписался»",
+            reply_markup=get_subscription_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+        
     await search_for_user(msg.from_user.id)
 
 @dp.message_handler(commands=['cancel'])
@@ -681,65 +761,14 @@ async def mod_cb(call: types.CallbackQuery):
     d = call.data
     try:
         if d.startswith("ban_"):
-            uid = int(d.split("_")[1])  # ← ИСПРАВЛЕНО: "_", не "*"
+            uid = int(d.split("_")[1])
             await ban_user_complete(uid)
             await call.answer("Забанен")
         elif d.startswith("ign_"):
-            rid = int(d.split("_")[1])  # ← ИСПРАВЛЕНО: "_", не "*"
+            rid = int(d.split("_")[1])
             for r in memory_reports:
                 if r['id'] == rid:
                     r['ignored'] = True
                     break
             await call.answer("👁 Жалоба скрыта (осталась в статистике)")
-        elif d.startswith("unban_"):
-            uid = int(d.split("_")[1])
-            memory_banned.discard(uid)
-            if db_pool:
-                async with db_pool.acquire() as conn:
-                    await conn.execute("UPDATE users SET banned = FALSE WHERE user_id = $1", uid)
-            await bot.send_message(uid, "🎉 Поздравляем, вы были разблокированы модерацией. Ваши жалобы обнулены. Впредь, соблюдайте правила. Приятного общения.", reply_markup=main_menu)
-            await clear_complaints(uid)
-            await call.answer("Разбанен. Жалобы обнулены.")
-    except Exception as e:
-        log.error(f"Ошибка: {e}")
-        await call.answer("Ошибка")
-
-# --- ПЕРЕСЫЛКА ---
-@dp.message_handler(content_types=types.ContentTypes.ANY)
-async def relay(msg: types.Message):
-    # Если пользователь в процессе жалобы, не пересылаем сообщения
-    if msg.from_user.id in user_reporting:
-        return
-       
-    partner = await get_partner(msg.from_user.id)
-    if not partner:
-        return
-    try:
-        if msg.text:
-            await bot.send_message(partner, msg.text)
-        elif msg.photo:
-            await bot.send_photo(partner, msg.photo[-1].file_id, caption=msg.caption)
-        elif msg.sticker:
-            await bot.send_sticker(partner, msg.sticker.file_id)
-        elif msg.voice:
-            await bot.send_voice(partner, msg.voice.file_id)
-        elif msg.document:
-            await bot.send_document(partner, msg.document.file_id)
-        elif msg.video:
-            await bot.send_video(partner, msg.video.file_id)
-        else:
-            await bot.send_message(partner, "Данный тип сообщения не поддерживается.")
-    except Exception as e:
-        log.error(f"Ошибка: {e}")
-        await break_pair(msg.from_user.id)
-        await msg.answer("Ошибка. Чат прерван.", reply_markup=main_menu)
-
-# ---------- ЗАПУСК ----------
-async def on_startup(_):
-    await init_db()
-    await load_banned_users()
-    await load_active_users()
-    log.info("Бот запущен")
-
-if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+        elif
