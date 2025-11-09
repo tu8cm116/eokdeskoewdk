@@ -288,7 +288,7 @@ async def ban_user_auto(uid):
    
     if MODERATOR_ID:
         code = await get_user_code(uid) or "—"
-        await bot.send_message(MODERATOR_ID, f"🚫 АВТОБАН: <code>{uid}</code> (<code>{code}</code>) — 5+ жалоб")
+        await bot.send_message(MODERATOR_ID, f"🚫 АВТОБАН: <code>{code}</code> — 5+ жалоб")  # ← ИЗМЕНЕНО: только код
    
     log.info(f"Автобан пользователя {uid} за 5+ жалоб")
 
@@ -444,8 +444,8 @@ async def report_reason(msg: types.Message):
         await bot.send_message(
             MODERATOR_ID,
             f"🚩 <b>ЖАЛОБА #{report_id}</b>\n"
-            f"От: <code>{uid}</code> (<code>{from_code}</code>)\n"
-            f"На: <code>{partner}</code> (<code>{to_code}</code>)\n"
+            f"От: <code>{from_code}</code>\n"  # ← ИЗМЕНЕНО: только код
+            f"На: <code>{to_code}</code>\n"    # ← ИЗМЕНЕНО: только код
             f"Причина: {reason}\n"
             f"Всего жалоб: {count}\n"
             f"/mod",
@@ -538,8 +538,8 @@ async def show_reports(msg: types.Message):
         kb.add(InlineKeyboardButton("👁 Игнор", callback_data=f"ign_{r['id']}"))
         await msg.answer(
             f"🚩 <b>Жалоба #{r['id']}</b>\n"
-            f"От: <code>{r['from']}</code> (<code>{from_code}</code>)\n"
-            f"На: <code>{r['to']}</code> (<code>{to_code}</code>)\n"
+            f"От: <code>{from_code}</code>\n"  # ← ИЗМЕНЕНО: только код
+            f"На: <code>{to_code}</code>\n"    # ← ИЗМЕНЕНО: только код
             f"Причина: {r['reason']}",
             reply_markup=kb,
             parse_mode="HTML"
@@ -567,7 +567,8 @@ async def show_bans(msg: types.Message):
         return await msg.answer("Нет забаненных.", reply_markup=mod_menu)
     kb = InlineKeyboardMarkup()
     for uid in memory_banned:
-        kb.add(InlineKeyboardButton(f"Разбанить {uid}", callback_data=f"unban_{uid}"))
+        user_code = await get_user_code(uid) or f"user_{uid}"  # ← ИЗМЕНЕНО: используем код вместо ID
+        kb.add(InlineKeyboardButton(f"Разбанить {user_code}", callback_data=f"unban_{uid}"))
     await msg.answer("Забаненные:", reply_markup=kb)
 
 # /user — ВСЕ ЖАЛОБЫ
@@ -577,21 +578,21 @@ async def user_info(msg: types.Message):
         return await msg.answer("🚫 Только для модератора.")
     text = msg.text.strip()
     if len(text.split()) < 2:
-        return await msg.answer("ℹ️ Использование: /user <id или код>")
+        return await msg.answer("ℹ️ Использование: /user <код>")
     query = text.split()[1]
     uid = None
-    if query.isdigit():
-        uid = int(query)
-    else:
-        for u, c in user_codes.items():
-            if c == query.upper():
-                uid = u
-                break
-        if not uid and db_pool:
-            async with db_pool.acquire() as conn:
-                uid = await conn.fetchval("SELECT user_id FROM users WHERE code = $1", query.upper())
+    
+    # Поиск только по коду (убрана проверка на цифры)
+    for u, c in user_codes.items():
+        if c == query.upper():
+            uid = u
+            break
+    if not uid and db_pool:
+        async with db_pool.acquire() as conn:
+            uid = await conn.fetchval("SELECT user_id FROM users WHERE code = $1", query.upper())
     if not uid:
         return await msg.answer("❌ Пользователь не найден.")
+    
     status = "в чате" if await get_partner(uid) else "не в чате"
     banned = "да" if await is_banned(uid) else "нет"
     code = await get_user_code(uid) or "Нет кода"
@@ -599,8 +600,7 @@ async def user_info(msg: types.Message):
     user_reports = [r for r in memory_reports if r['to'] == uid]
     response = (
         f"Пользователь\n"
-        f"ID: <code>{uid}</code>\n"
-        f"Код: <code>{code}</code>\n"
+        f"Код: <code>{code}</code>\n"  # ← ИЗМЕНЕНО: убран ID
         f"Статус: {status}\n"
         f"Забанен: {banned}\n"
         f"Жалоб: {total_complaints}\n\n"
@@ -610,7 +610,7 @@ async def user_info(msg: types.Message):
         for r in user_reports:
             from_code = await get_user_code(r['from']) or "—"
             response += (
-                f"• От: <code>{r['from']}</code> (<code>{from_code}</code>)\n"
+                f"• От: <code>{from_code}</code>\n"  # ← ИЗМЕНЕНО: только код
                 f" Причина: {r['reason']}\n\n"
             )
     else:
@@ -624,19 +624,18 @@ async def ban_user(msg: types.Message):
         return
     text = msg.text.strip()
     if len(text.split()) < 2:
-        return await msg.answer("ℹ️ Использование: /ban <id или код>")
+        return await msg.answer("ℹ️ Использование: /ban <код>")  # ← ИЗМЕНЕНО: убрано упоминание ID
     query = text.split()[1]
     uid = None
-    if query.isdigit():
-        uid = int(query)
-    else:
-        for u, c in user_codes.items():
-            if c == query.upper():
-                uid = u
-                break
-        if not uid and db_pool:
-            async with db_pool.acquire() as conn:
-                uid = await conn.fetchval("SELECT user_id FROM users WHERE code = $1", query.upper())
+    
+    # Поиск только по коду
+    for u, c in user_codes.items():
+        if c == query.upper():
+            uid = u
+            break
+    if not uid and db_pool:
+        async with db_pool.acquire() as conn:
+            uid = await conn.fetchval("SELECT user_id FROM users WHERE code = $1", query.upper())
     if not uid:
         return await msg.answer("Не найден.")
    
@@ -650,21 +649,21 @@ async def unban_user(msg: types.Message):
         return
     text = msg.text.strip()
     if len(text.split()) < 2:
-        return await msg.answer("ℹ️ Использование: /unban <id или код>")
+        return await msg.answer("ℹ️ Использование: /unban <код>")  # ← ИЗМЕНЕНО: убрано упоминание ID
     query = text.split()[1]
     uid = None
-    if query.isdigit():
-        uid = int(query)
-    else:
-        for u, c in user_codes.items():
-            if c == query.upper():
-                uid = u
-                break
-        if not uid and db_pool:
-            async with db_pool.acquire() as conn:
-                uid = await conn.fetchval("SELECT user_id FROM users WHERE code = $1", query.upper())
+    
+    # Поиск только по коду
+    for u, c in user_codes.items():
+        if c == query.upper():
+            uid = u
+            break
+    if not uid and db_pool:
+        async with db_pool.acquire() as conn:
+            uid = await conn.fetchval("SELECT user_id FROM users WHERE code = $1", query.upper())
     if not uid:
         return await msg.answer("Не найден.")
+    
     memory_banned.discard(uid)
     if db_pool:
         async with db_pool.acquire() as conn:
